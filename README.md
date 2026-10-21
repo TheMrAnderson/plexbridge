@@ -2,6 +2,8 @@
 
 PlexBridge is a small Dockerized HTTP service that presents a persistent, Plex-shaped identity and exposes a Plex-compatible music library backed by an external music server. Navidrome is the first supported provider and Plex is the client-facing protocol endpoint.
 
+PlexBridge is released under the [GNU Affero General Public License v3.0](LICENSE).
+
 ## Current status
 
 The current prototype is usable with Plexamp and has been tested end to end with
