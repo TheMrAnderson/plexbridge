@@ -8,6 +8,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import net from 'node:net';
 import tls from 'node:tls';
+import { version } from './version.js';
 
 const settings = loadSettings();
 const certificate = await loadPlexCertificate(settings.configDir);
@@ -33,7 +34,7 @@ const listener = net.createServer((socket) => {
 await new Promise<void>((resolve, reject) => { listener.once('error', reject); listener.listen(settings.port, settings.host, resolve); });
 const identity = await loadOrCreateIdentity(settings.configDir);
 const sockets = settings.discoveryEnabled ? startDiscovery(settings.serverName, settings.port, identity.machineIdentifier) : [];
-console.info(JSON.stringify({ event: 'startup', version: '0.1.0', host: settings.host, port: settings.port, tls: Boolean(certificate), discovery: settings.discoveryEnabled ? 'configured' : 'disabled' }));
+console.info(JSON.stringify({ event: 'startup', version, host: settings.host, port: settings.port, tls: Boolean(certificate), discovery: settings.discoveryEnabled ? 'configured' : 'disabled' }));
 void (async () => {
   try {
     const credentials = JSON.parse(await readFile(join(settings.configDir, 'plex-credentials.json'), 'utf8')) as { authToken?: string; serverToken?: string };

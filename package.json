@@ -1,6 +1,6 @@
 {
   "name": "plexbridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A Plex-compatible music bridge for provider-backed libraries",
   "private": true,
   "type": "module",

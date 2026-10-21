@@ -60,6 +60,7 @@ test('certificate enrollment sends the captured multipart field shape', async ()
   try {
     await ensurePlexCertificate(identity, dir, 'server-token', fetchImpl, () => undefined);
     assert.equal(requests.length, 1);
+    assert.match(requests[0].url, /\/api\/v2\/devices\/machine-id\/certificate\/csr\?/);
     assert.match(requests[0].body, /Content-Disposition: form-data; name="file"/);
     assert.doesNotMatch(requests[0].body, /filename=/);
     assert.match(requests[0].body, /-----BEGIN CERTIFICATE REQUEST-----\r?\n/);

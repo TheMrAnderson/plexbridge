@@ -10,7 +10,7 @@ const execFile = promisify(execFileCallback);
 type Log = (event: string, details: Record<string, unknown>) => void;
 
 function headers(identity: Identity, token: string): Record<string, string> {
-  return plexServerHeaders(identity, 'PlexBridge', token, identity.processedMachineIdentifier);
+  return plexServerHeaders(identity, 'PlexBridge', token, identity.machineIdentifier);
 }
 async function exists(path: string): Promise<boolean> { try { await stat(path); return true; } catch { return false; } }
 export function formatPlexCertificateRequest(value: string): string { const match = value.match(/-----BEGIN ([^-]+)-----([\s\S]+?)-----END \1-----/); if (!match) throw new Error('OpenSSL did not produce a valid certificate request'); return `-----BEGIN CERTIFICATE REQUEST-----\n${match[2].trim()}\n-----END CERTIFICATE REQUEST-----`; }
@@ -30,7 +30,7 @@ export async function plexDirectUrl(configDir: string, publicUrl: string, port =
 export async function ensurePlexCertificate(identity: Identity, configDir: string, serverToken: string, fetchImpl: typeof fetch = fetch, log: Log = (event, details) => console.info(JSON.stringify({ event, ...details }))): Promise<boolean> {
   if (await hasPlexCertificate(configDir)) return true;
   if (!serverToken) throw new Error('Plex server token is required for certificate enrollment');
-  const endpoint = `https://servers.plex.tv/api/v2/devices/${encodeURIComponent(identity.processedMachineIdentifier)}`;
+  const endpoint = `https://servers.plex.tv/api/v2/devices/${encodeURIComponent(identity.machineIdentifier)}`;
   const subjectResponse = await fetchImpl(`${endpoint}/certificate/subject`, { headers: headers(identity, serverToken) });
   if (!subjectResponse.ok) throw new Error(`Plex certificate subject request returned HTTP ${subjectResponse.status}`);
   const commonName = (await subjectResponse.text()).match(/commonName="([^"]+)"/)?.[1];

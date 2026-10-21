@@ -61,6 +61,13 @@ Once registered, Plexamp should discover the server through the advertised
 Plex-direct connection. Do not delete `./config` unless you intentionally want
 to create a new Plex server identity and repeat onboarding.
 
+After enrollment, the local admin page remains available at
+`http://<host>:32400/admin`. The trusted HTTPS form uses the generated
+Plex-direct hostname, for example
+`https://<public-ip-with-dashes>.<certificate-id>.plex.direct:32400/admin`;
+do not substitute the raw IP for that hostname because the certificate does
+not cover the IP address directly.
+
 `GET /health` reports claim and live Plex registration separately: `claimed`,
 `published`, `present`, `presence`, `accessTokenReady`, and `connectionUrl`.
 Registration is only access-token-ready when Plex has issued a non-empty server token.
