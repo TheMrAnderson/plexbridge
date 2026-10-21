@@ -1,6 +1,6 @@
 import { Readable } from 'node:stream';
 import type { MusicProvider } from '../music/types.js';
-import { emptyPlaylistSectionJson, firstCharacterJson, genresJson, libraryItems, libraryItemsJson, playQueueJson, playlistQueueJson, timelineJson } from './protocol.js';
+import { emptyLibraryFilterJson, emptyPlaylistSectionJson, firstCharacterJson, genresJson, libraryItems, libraryItemsJson, playQueueJson, playlistQueueJson, timelineJson } from './protocol.js';
 import { albumItem, artistItem, directPlayableFormats, metadataKey as key, parseMetadataKey as parseKey, songItem } from './metadata.js';
 import type { PlexItem } from './protocol.js';
 
@@ -63,6 +63,12 @@ export function registerLibraryRoutes(app: RouteApp, { music, playQueues, playli
       console.warn(JSON.stringify({ event: 'music_failed', operation: 'genres', error: error instanceof Error ? error.message : 'unknown error' }));
       return reply.code(503).send('Navidrome is unavailable\n');
   } });
+  for (const [filter, title] of [['style', 'By Style'], ['mood', 'By Mood'], ['studio', 'By Studio'], ['folder', 'By Folder']] as const) {
+      app.get(`/library/sections/:id/${filter}`, async (request, reply) => {
+          if (request.params.id !== '1') return reply.code(404).send('Unknown library section\n');
+          return reply.type('application/json').send(emptyLibraryFilterJson(title));
+      });
+  }
   app.get('/library/sections/:id/firstCharacter', async (request, reply) => { if (request.params.id !== '1')
       return reply.code(404).send('Unknown library section\n'); if (!request.headers.accept?.includes('application/json'))
       return reply.code(406).send('JSON required\n'); try {
@@ -208,10 +214,17 @@ export function registerLibraryRoutes(app: RouteApp, { music, playQueues, playli
       const source = await music.song(parsed.id);
       const sourceFormat = (source.suffix ?? source.contentType?.split('/')[1] ?? 'mp3').toLowerCase();
       const streamUrl = preserveSourceFormats && directPlayableFormats.has(sourceFormat) ? await music.streamUrl(parsed.id) : await music.streamUrl(parsed.id, { format: 'mp3' });
-      const response = await fetch(streamUrl);
+      const range = request.headers.range;
+      const response = await fetch(streamUrl, range ? { headers: { range } } : undefined);
       if (!response.ok || !response.body)
           return reply.code(502).send('Navidrome stream unavailable\n');
+      if (response.status === 206)
+          reply.code(206);
       reply.header('content-type', response.headers.get('content-type') ?? 'audio/mpeg');
+      for (const header of ['content-range', 'accept-ranges']) {
+          const value = response.headers.get(header);
+          if (value) reply.header(header, value);
+      }
       if (response.headers.get('content-length'))
           reply.header('content-length', response.headers.get('content-length'));
       return reply.send(Readable.fromWeb(response.body as any));
@@ -275,12 +288,19 @@ export function registerLibraryRoutes(app: RouteApp, { music, playQueues, playli
           const source = await music.song(parsed.id);
           const sourceFormat = (source.suffix ?? source.contentType?.split('/')[1] ?? 'mp3').toLowerCase();
           const canDirectPlay = preserveSourceFormats && directPlayableFormats.has(sourceFormat);
-          console.debug(JSON.stringify({ event: 'audio_stream', sourceFormat, directPlayRequested: directPlay, directPlayOverridden: canDirectPlay && !directPlay, canDirectPlay, preserveSourceFormats, outputFormat: canDirectPlay ? sourceFormat : 'mp3', musicBitrate: query.musicBitrate ?? '', clientProfile: request.headers['x-plex-client-profile-extra'] ?? '' }));
+          console.debug(JSON.stringify({ event: 'audio_stream', sourceFormat, directPlayRequested: directPlay, directPlayOverridden: canDirectPlay && !directPlay, canDirectPlay, preserveSourceFormats, outputFormat: canDirectPlay ? sourceFormat : 'mp3', musicBitrate: query.musicBitrate ?? '', range: request.headers.range ?? '', clientProfile: request.headers['x-plex-client-profile-extra'] ?? '' }));
           const streamUrl = await music.streamUrl(parsed.id, canDirectPlay ? {} : { format: 'mp3', maxBitRate });
-          const response = await fetch(streamUrl);
+          const range = request.headers.range;
+          const response = await fetch(streamUrl, range ? { headers: { range } } : undefined);
           if (!response.ok || !response.body)
               return reply.code(502).send('Navidrome stream unavailable\n');
+          if (response.status === 206)
+              reply.code(206);
           reply.header('content-type', response.headers.get('content-type') ?? 'audio/mpeg');
+          for (const header of ['content-range', 'accept-ranges']) {
+              const value = response.headers.get(header);
+              if (value) reply.header(header, value);
+          }
           if (response.headers.get('content-length'))
               reply.header('content-length', response.headers.get('content-length'));
           return reply.send(Readable.fromWeb(response.body as any));

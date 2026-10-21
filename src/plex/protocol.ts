@@ -60,6 +60,10 @@ export function genresJson(genres: Array<{ name: string; songCount?: number; alb
   return JSON.stringify({ MediaContainer: { size: Directory.length, allowSync: false, art: '/:/resources/artist-fanart.jpg', content: 'secondary', identifier: 'com.plexapp.plugins.library', mediaTagPrefix: '/system/bundle/media/flags/', mediaTagVersion: 1, nocache: true, thumb: '/:/resources/artist.png', title1: 'Music', title2: 'By Genre', viewGroup: 'secondary', viewMode: 65592, Directory } });
 }
 
+export function emptyLibraryFilterJson(title: string): string {
+  return JSON.stringify({ MediaContainer: { size: 0, allowSync: false, content: 'secondary', identifier: 'com.plexapp.plugins.library', librarySectionID: 1, librarySectionTitle: 'Music', mediaTagPrefix: '/system/bundle/media/flags/', mediaTagVersion: 1, nocache: true, title1: 'Music', title2: title, viewGroup: 'secondary', viewMode: 65592, Directory: [] } });
+}
+
 export function timelineJson(): string {
   return JSON.stringify({ MediaContainer: { size: 0 } });
 }

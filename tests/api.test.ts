@@ -40,6 +40,14 @@ test('library is a single empty music section', async () => withApp(async (app) 
   assert.match(response.body, /type="artist"/);
 }));
 
+test('optional library filters return empty PMS-compatible responses', async () => withApp(async (app) => {
+  for (const filter of ['style', 'mood', 'studio', 'folder']) {
+    const response = await app.inject({ method: 'GET', url: `/library/sections/1/${filter}`, headers: { accept: 'application/json' } });
+    assert.equal(response.statusCode, 200, filter);
+    assert.equal(JSON.parse(response.body).MediaContainer.size, 0, filter);
+  }
+}));
+
 test('media providers discovery exposes the music library provider', async () => withApp(async (app) => {
   const response = await app.inject('/media/providers');
   assert.equal(response.statusCode, 200);
