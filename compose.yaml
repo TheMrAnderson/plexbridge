@@ -1,0 +1,23 @@
+services:
+  plexbridge:
+    image: ghcr.io/themranderson/plexbridge:latest
+    ports:
+      - "${PLEXBRIDGE_HOST_PORT:-32400}:32400"
+      - "${PLEXBRIDGE_GDM_PORT:-32410}:32410/udp"
+      - "${PLEXBRIDGE_GDM_PORT_2:-32412}:32412/udp"
+      - "${PLEXBRIDGE_GDM_PORT_3:-32413}:32413/udp"
+      - "${PLEXBRIDGE_GDM_PORT_4:-32414}:32414/udp"
+    environment:
+      PLEXBRIDGE_CONFIG_DIR: /config
+      NAVIDROME_URL: ${NAVIDROME_URL:?Set NAVIDROME_URL in .env}
+      NAVIDROME_USERNAME: ${NAVIDROME_USERNAME:?Set NAVIDROME_USERNAME in .env}
+      NAVIDROME_PASSWORD: ${NAVIDROME_PASSWORD:?Set NAVIDROME_PASSWORD in .env}
+    volumes:
+      - ./config:/config
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:32400/health').then(r => { if (!r.ok) process.exit(1) })"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
