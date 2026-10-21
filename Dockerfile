@@ -5,6 +5,7 @@ RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
 COPY tests ./tests
+COPY scripts ./scripts
 RUN npm run build
 
 FROM node:22-bookworm-slim
