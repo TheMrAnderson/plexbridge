@@ -28,7 +28,7 @@ export class NavidromeClient implements MusicProvider {
 
   async artists(): Promise<MusicArtist[]> {
     const result = await this.call('getArtists');
-    return (result.artists?.index ?? []).flatMap((index: JsonObject) => index.artist ?? []).map((artist: JsonObject) => ({ id: String(artist.id), name: artist.name ?? 'Unknown Artist' }));
+    return (result.artists?.index ?? []).flatMap((index: JsonObject) => index.artist ?? []).map((artist: JsonObject) => ({ id: String(artist.id), name: artist.name ?? 'Unknown Artist', coverArt: artist.coverArt }));
   }
 
   async albums(): Promise<MusicAlbum[]> {
@@ -48,13 +48,13 @@ export class NavidromeClient implements MusicProvider {
 
   async playlists(): Promise<MusicPlaylist[]> {
     const result = await this.call('getPlaylists');
-    return (result.playlists?.playlist ?? []).map((playlist: JsonObject) => ({ id: String(playlist.id), name: playlist.name ?? 'Untitled Playlist', comment: playlist.comment, songCount: Number(playlist.songCount ?? 0), duration: Number(playlist.duration ?? 0) }));
+    return (result.playlists?.playlist ?? []).map((playlist: JsonObject) => ({ id: String(playlist.id), name: playlist.name ?? 'Untitled Playlist', comment: playlist.comment, songCount: Number(playlist.songCount ?? 0), duration: Number(playlist.duration ?? 0), coverArt: playlist.coverArt }));
   }
 
   async playlist(id: string): Promise<MusicPlaylistResult> {
     const result = await this.call('getPlaylist', { id });
     const playlist = result.playlist ?? {};
-    return { playlist: { id: String(playlist.id), name: playlist.name ?? 'Untitled Playlist', comment: playlist.comment, songCount: Number(playlist.songCount ?? 0), duration: Number(playlist.duration ?? 0) }, songs: (playlist.entry ?? []).map((song: JsonObject) => this.normalizeSong(song)) };
+    return { playlist: { id: String(playlist.id), name: playlist.name ?? 'Untitled Playlist', comment: playlist.comment, songCount: Number(playlist.songCount ?? 0), duration: Number(playlist.duration ?? 0), coverArt: playlist.coverArt }, songs: (playlist.entry ?? []).map((song: JsonObject) => this.normalizeSong(song)) };
   }
 
   async addToPlaylist(id: string, songIds: string[]): Promise<void> {
@@ -64,7 +64,7 @@ export class NavidromeClient implements MusicProvider {
   async artist(id: string): Promise<{ artist: MusicArtist; albums: MusicAlbum[] }> {
     const result = await this.call('getArtist', { id });
     const artist = result.artist ?? {};
-    return { artist: { id: String(artist.id), name: artist.name ?? 'Unknown Artist' }, albums: (artist.album ?? []).map((album: JsonObject) => this.normalizeAlbum(album)) };
+    return { artist: { id: String(artist.id), name: artist.name ?? 'Unknown Artist', coverArt: artist.coverArt }, albums: (artist.album ?? []).map((album: JsonObject) => this.normalizeAlbum(album)) };
   }
 
   async album(id: string): Promise<{ album: MusicAlbum; songs: MusicSong[] }> {

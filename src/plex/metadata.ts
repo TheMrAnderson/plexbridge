@@ -24,7 +24,8 @@ export function parseMetadataKey(value: string): { kind: 'a' | 'l' | 's'; id: st
 }
 
 export function artistItem(artist: MusicArtist): PlexItem {
-  return { key: metadataKey('a', artist.id), ratingKey: `a-${artist.id}`, title: artist.name, type: 'artist' };
+  const artwork = `${metadataKey('a', artist.id)}/thumb`;
+  return { key: metadataKey('a', artist.id), ratingKey: `a-${artist.id}`, title: artist.name, type: 'artist', thumb: artwork, art: artwork };
 }
 
 export function albumArtwork(id: string): string {

@@ -313,10 +313,10 @@ export function registerLibraryRoutes(app: RouteApp, { music, playQueues, playli
           try {
               await loadPlaylistIds();
       const result = await music.playlist(playlistIds.get(playlistMatch[1]) ?? playlistMatch[1]);
-              const firstSong = result.songs.find((song) => song.coverArt);
-              if (!firstSong)
+              const artworkId = result.playlist.coverArt ?? result.songs.find((song) => song.coverArt)?.id;
+              if (!artworkId)
                   return reply.code(404).send('Unknown artwork\n');
-              const response = await fetch(await music.coverArtUrl(firstSong.id));
+              const response = await fetch(await music.coverArtUrl(artworkId));
               if (!response.ok || !response.body)
                   return reply.code(404).send('Artwork unavailable\n');
               reply.header('content-type', response.headers.get('content-type') ?? 'image/jpeg');
@@ -335,7 +335,8 @@ export function registerLibraryRoutes(app: RouteApp, { music, playQueues, playli
           return reply.code(404).send('Unknown artwork\n');
       }
       try {
-          const response = await fetch(await music.coverArtUrl(parsed.id));
+          const artworkId = parsed.kind === 'a' ? (await music.artist(parsed.id)).artist.coverArt ?? parsed.id : parsed.id;
+          const response = await fetch(await music.coverArtUrl(artworkId));
           if (!response.ok || !response.body)
               return reply.code(404).send('Artwork unavailable\n');
           reply.header('content-type', response.headers.get('content-type') ?? 'image/jpeg');
@@ -350,7 +351,8 @@ export function registerLibraryRoutes(app: RouteApp, { music, playQueues, playli
   app.get('/library/metadata/:id/:artType', async (request, reply) => { const artType = request.params.artType; if (artType !== 'thumb' && artType !== 'art')
       return reply.code(404).send('Unknown artwork\n'); const parsed = parseKey(request.params.id); if (!parsed)
       return reply.code(404).send('Unknown artwork\n'); try {
-      const response = await fetch(await music.coverArtUrl(parsed.id));
+      const artworkId = parsed.kind === 'a' ? (await music.artist(parsed.id)).artist.coverArt ?? parsed.id : parsed.id;
+      const response = await fetch(await music.coverArtUrl(artworkId));
       if (!response.ok || !response.body)
           return reply.code(404).send('Artwork unavailable\n');
       reply.header('content-type', response.headers.get('content-type') ?? 'image/jpeg');
