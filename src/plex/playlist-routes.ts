@@ -19,21 +19,14 @@ const playlistsResponse = async (request: any, reply: any) => {
     const playlists = await music.playlists();
     const usedKeys = new Set([...playlistIds.keys()].filter((key) => /^\d{1,6}$/.test(key)));
     let nextPlaylistKey = 10000;
-    const plexPlaylists = [
-      { id: 'builtin-2', ratingKey: '2', guid: 'f147d4ee-5177-4e56-b290-b527f7a75d2b', name: '❤️ Tracks', comment: 'All your highly rated tracks, in one convenient place.', songCount: 0, duration: 0, smart: true, icon: 'playlist://image.smart' },
-      { id: 'builtin-1', ratingKey: '1', guid: 'b53ec259-9a4f-43fe-a393-19d94ad4e9d4', name: 'All Music', comment: 'The easiest way to play or shuffle your entire collection.', songCount: 0, duration: 0, smart: true, icon: 'playlist://image.smart' },
-      { id: 'builtin-5', ratingKey: '5', guid: 'ca04a18f-1107-4a3d-bc96-1487c9257e29', name: 'Fresh ❤️', comment: "Tracks you love but haven't heard lately.", songCount: 0, duration: 0, smart: true, icon: 'playlist://image.smart' },
-      { id: 'builtin-3', ratingKey: '3', guid: 'e9bc9986-03b4-4b70-a858-4066c23ba3e1', name: 'Recently Added', comment: 'Music added to your library recently.', songCount: 0, duration: 0, smart: true, icon: 'playlist://image.smart' },
-      { id: 'builtin-4', ratingKey: '4', guid: '3ff4893e-b10b-4853-a80e-347c948c1a75', name: 'Recently Played', comment: "Tracks you've listened to lately.", songCount: 0, duration: 0, smart: true, icon: 'playlist://image.smart' },
-      ...playlists.map((playlist) => {
+    const plexPlaylists = playlists.map((playlist) => {
       const existingKey = [...playlistIds.entries()].find(([key, id]) => id === playlist.id && /^\d{1,6}$/.test(key))?.[0];
       while (!existingKey && usedKeys.has(String(nextPlaylistKey))) nextPlaylistKey += 1;
       const ratingKey = existingKey ?? String(nextPlaylistKey++);
       usedKeys.add(ratingKey);
       playlistIds.set(ratingKey, playlist.id);
       return { ...playlist, ratingKey };
-      }),
-    ];
+    });
     await savePlaylistIds();
     console.debug(JSON.stringify({ event: 'playlist_response', count: plexPlaylists.length }));
     return reply.type('application/json').send(playlistsJson(plexPlaylists));
@@ -91,7 +84,7 @@ app.put('/playlists/:id/items', async (request: any, reply: any) => {
     console.debug(JSON.stringify({ event: 'playlist_update_result', plexPlaylistId: requestedId, musicPlaylistId: musicId, afterCount: result.songs.length, requestedTracksPresent: present }));
     if (!present) return reply.code(502).send('Navidrome did not add the requested track\n');
     const now = Math.floor(Date.now() / 1000);
-    return reply.type('application/json').send(JSON.stringify({ MediaContainer: { size: 1, totalSize: 1, offset: 0, Metadata: [{ ratingKey: requestedId, key: `/playlists/${requestedId}/items`, type: 'playlist', title: result.playlist.name, playlistType: 'audio', updatedAt: now }] } }));
+    return reply.type('application/json').send(JSON.stringify({ MediaContainer: { size: 1, totalSize: 1, offset: 0, Metadata: [{ ratingKey: requestedId, key: `/playlists/${requestedId}/items`, type: 'playlist', title: result.playlist.name, playlistType: 'audio', composite: `/playlists/${encodeURIComponent(requestedId)}/composite/${now}`, duration: result.playlist.duration * 1000, leafCount: result.playlist.songCount, updatedAt: now }] } }));
   } catch (error) { console.warn(JSON.stringify({ event: 'playlist_update_failed', error: error instanceof Error ? error.message : 'unknown error' })); return reply.code(502).send('Unable to update playlist\n'); }
 });
 }

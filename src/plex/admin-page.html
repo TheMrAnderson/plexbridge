@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PlexBridge setup</title>
+  <link rel="stylesheet" href="/admin.css">
+</head>
+<body>
+  <h1>PlexBridge setup</h1>
+  <p>Complete setup once. PlexBridge will resume automatically after a restart.</p>
+  <div class="card">
+    <p id="step" class="step">Checking setup…</p>
+    <input id="token" type="password" autocomplete="off" placeholder="Paste a short-lived Plex claim token">
+    <button id="claim">Claim this server</button>
+    <button id="login">Sign in to Plex</button>
+    <p class="hint">After the server is claimed, claiming is locked. Sign in is the only action needed to finish linking it to your Plex account.</p>
+    <p id="status">Checking status…</p>
+    <p id="url"></p>
+    <pre id="details"></pre>
+  </div>
+  <script src="/admin.js"></script>
+</body>
+</html>

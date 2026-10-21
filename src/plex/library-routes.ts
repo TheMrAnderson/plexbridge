@@ -19,7 +19,6 @@ interface LibraryRouteDependencies {
 export function registerLibraryRoutes(app: RouteApp, { music, playQueues, playlistIds, loadPlaylistIds, preserveSourceFormats }: LibraryRouteDependencies): void {
   const xml = (body: string) => ({ body, type: 'application/xml; charset=utf-8' });
   let nextPlayQueueId = 1;
-  let lastArtworkTrackId: string | undefined;
   const playback = new Map<string, { ratingKey: string; maxTimeMs: number; durationMs: number; scrobbled: boolean }>();
   const logPlaybackSignal = (event: string, request: any) => {
     const query = request.query as { state?: string; time?: string; duration?: string; ratingKey?: string; key?: string; playQueueID?: string; playQueueItemID?: string; playQueueVersion?: string };
@@ -134,7 +133,6 @@ export function registerLibraryRoutes(app: RouteApp, { music, playQueues, playli
       try {
           const queueId = String(nextPlayQueueId++);
           const item = songItem(await music.song(parsed.id));
-          lastArtworkTrackId = parsed.id;
           const sourceUri = query.uri?.startsWith('library://') ? query.uri : `library://plexbridge-music/item/${item.key.replace(/^\/+/, '')}`;
           playQueues.set(queueId, { item, sourceUri });
           console.debug(JSON.stringify({ event: 'play_queue_response', queueId, trackKey: item.key, sourceUri, media: item.media, thumb: item.thumb, art: item.art }));
@@ -198,7 +196,6 @@ export function registerLibraryRoutes(app: RouteApp, { music, playQueues, playli
           }
           const song = await music.song(parsed.id);
           const item = songItem(song);
-          lastArtworkTrackId = parsed.id;
           return json ? reply.type('application/json').send(libraryItemsJson([item], 'track')) : reply.type(xml('').type).send(libraryItems([item], 'track'));
       }
       catch (error) {
@@ -327,9 +324,7 @@ export function registerLibraryRoutes(app: RouteApp, { music, playQueues, playli
           }
       }
       const match = /(?:^|\/)library\/metadata\/((?:a|l|s)-[^/?#]+)(?:\/(?:thumb|art)(?:\/[^/?#]+)?)?(?:[/?#]|$)/.exec(url);
-      const parsed = match ? parseKey(match[1]) : url === 'undefined' && lastArtworkTrackId ? { kind: 's', id: lastArtworkTrackId } : undefined;
-      if (!match && url === 'undefined' && lastArtworkTrackId)
-          console.warn(JSON.stringify({ event: 'artwork_fallback', trackId: lastArtworkTrackId }));
+      const parsed = match ? parseKey(match[1]) : undefined;
       if (!parsed) {
           console.warn(JSON.stringify({ event: 'artwork_url_unrecognized', url: sanitizedUrl }));
           return reply.code(404).send('Unknown artwork\n');

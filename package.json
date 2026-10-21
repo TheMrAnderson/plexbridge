@@ -1,6 +1,6 @@
 {
   "name": "plexbridge",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "A Plex-compatible music bridge for provider-backed libraries",
   "private": true,
   "type": "module",
@@ -16,7 +16,7 @@
     "tsconfig.json"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
     "start": "node --env-file-if-exists=.env dist/src/server.js",
     "plex:login": "PLEXBRIDGE_CONFIG_DIR=./config npm run build && PLEXBRIDGE_CONFIG_DIR=./config node --env-file-if-exists=.env dist/src/cli/auth.js",
     "plex:claim": "PLEXBRIDGE_CONFIG_DIR=./config npm run build && PLEXBRIDGE_CONFIG_DIR=./config node --env-file-if-exists=.env dist/src/cli/claim.js",

@@ -46,15 +46,8 @@ export function libraryHubsJson(): string {
 }
 
 export function playlistsJson(playlists?: Array<{ id: string; ratingKey?: string; guid?: string; name: string; comment?: string; songCount: number; duration: number; smart?: boolean; icon?: string }>): string {
-  const names = [
-    ['2', '❤️ Tracks', 'All your highly rated tracks, in one convenient place.', 'f147d4ee-5177-4e56-b290-b527f7a75d2b'],
-    ['1', 'All Music', 'The easiest way to play or shuffle your entire collection.', 'b53ec259-9a4f-43fe-a393-19d94ad4e9d4'],
-    ['5', 'Fresh ❤️', "Tracks you love but haven't heard lately.", 'ca04a18f-1107-4a3d-bc96-1487c9257e29'],
-    ['3', 'Recently Added', 'Music added to your library recently.', 'e9bc9986-03b4-4b70-a858-4066c23ba3e1'],
-    ['4', 'Recently Played', "Tracks you've listened to lately.", '3ff4893e-b10b-4853-a80e-347c948c1a75'],
-  ];
   const now = Math.floor(Date.now() / 1000);
-  const Metadata = playlists ? playlists.map((playlist) => { const ratingKey = playlist.ratingKey ?? playlist.id; return { ratingKey, key: `/playlists/${encodeURIComponent(ratingKey)}/items`, guid: `com.plexapp.agents.none://${playlist.guid ?? playlistGuid(playlist.id)}`, type: 'playlist', title: playlist.name, titleSort: playlist.name.replace(/^[^\p{L}\p{N}]*/u, ''), summary: playlist.comment ?? '', smart: playlist.smart ?? false, playlistType: 'audio', ...(playlist.icon ? { icon: playlist.icon } : {}), ...(playlist.songCount > 0 ? { composite: `/playlists/${encodeURIComponent(ratingKey)}/composite/${now}` } : {}), viewCount: 1, lastViewedAt: now, ...(playlist.duration > 0 ? { duration: playlist.duration * 1000 } : {}), leafCount: playlist.songCount, addedAt: now, updatedAt: now }; }) : names.map(([ratingKey, title, summary, guid]) => ({ ratingKey, key: `/playlists/${ratingKey}/items`, guid: `com.plexapp.agents.none://${guid}`, type: 'playlist', title, titleSort: title.replace(/^[^\p{L}\p{N}]*/u, ''), summary, smart: true, playlistType: 'audio', icon: 'playlist://image.smart', viewCount: 1, lastViewedAt: now, leafCount: 0, addedAt: now, updatedAt: now }));
+  const Metadata = (playlists ?? []).map((playlist) => { const ratingKey = playlist.ratingKey ?? playlist.id; const composite = playlist.songCount > 0 ? `/playlists/${encodeURIComponent(ratingKey)}/composite/${now}` : undefined; return { ratingKey, key: `/playlists/${encodeURIComponent(ratingKey)}/items`, guid: `com.plexapp.agents.none://${playlist.guid ?? playlistGuid(playlist.id)}`, type: 'playlist', title: playlist.name, titleSort: playlist.name.replace(/^[^\p{L}\p{N}]*/u, ''), summary: playlist.comment ?? '', smart: playlist.smart ?? false, playlistType: 'audio', ...(playlist.icon ? { icon: playlist.icon } : {}), ...(composite ? { composite, thumb: composite, art: composite } : {}), viewCount: 1, lastViewedAt: now, ...(playlist.duration > 0 ? { duration: playlist.duration * 1000 } : {}), leafCount: playlist.songCount, addedAt: now, updatedAt: now }; });
   return JSON.stringify({ MediaContainer: { size: Metadata.length, totalSize: Metadata.length, offset: 0, Metadata } });
 }
 

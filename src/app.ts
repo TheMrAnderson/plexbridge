@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { createMusicProvider } from './music/provider.js';
 import type { MusicProvider } from './music/types.js';
 import { ensurePlexCertificate, hasPlexCertificate, plexDirectUrl } from './plex/certificate.js';
-import { adminPage } from './plex/admin-page.js';
+import { adminPage, adminScript, adminStyles } from './plex/admin-page.js';
 import { registerPlaylistRoutes } from './plex/playlist-routes.js';
 import { registerLibraryRoutes } from './plex/library-routes.js';
 
@@ -96,6 +96,8 @@ export function createApp(settings: Settings, certificate?: { key: Buffer; cert:
   });
   app.get('/:/eventsource/notifications', async (_request, reply) => { reply.hijack(); const response = reply.raw; response.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive' }); response.write(': \n\n'); const keepAlive = setInterval(() => response.write(': -1\n\n'), 15000); response.on('close', () => clearInterval(keepAlive)); });
   app.get('/admin', async (_request, reply) => reply.type('text/html; charset=utf-8').send(adminPage()));
+  app.get('/admin.css', async (_request, reply) => reply.type('text/css; charset=utf-8').send(adminStyles()));
+  app.get('/admin.js', async (_request, reply) => reply.type('application/javascript; charset=utf-8').send(adminScript()));
   app.get('/admin/status', async () => { const stored = await credentials(); let registration: RegistrationHealth | undefined; if (stored.serverToken) { try { registration = await getRegistrationHealth(await getIdentity(), await plexDirectUrl(settings.configDir, settings.publicUrl), stored.serverToken, stored.authToken ?? ''); } catch { /* status remains useful without cloud health */ } } return { ...adminOperation, accountAuthenticated: Boolean(stored.authToken), certificateReady: await hasPlexCertificate(settings.configDir), registration }; });
   app.post('/admin/login', async (_request, reply) => {
     if (adminOperation.state === 'login_waiting' || adminOperation.state === 'claim_running' || adminOperation.state === 'register_running') return reply.code(409).send({ ...adminOperation, message: 'An operation is already running' });

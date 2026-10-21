@@ -24,6 +24,15 @@ test('identity persists and is consistent across endpoints', async () => withApp
   assert.ok(id);
 }));
 
+test('admin page serves its separate assets', async () => withApp(async (app) => {
+  const page = await app.inject('/admin');
+  assert.equal(page.statusCode, 200);
+  assert.match(page.body, /href="\/admin\.css"/);
+  assert.match(page.body, /src="\/admin\.js"/);
+  assert.equal((await app.inject('/admin.css')).statusCode, 200);
+  assert.equal((await app.inject('/admin.js')).statusCode, 200);
+}));
+
 test('library is a single empty music section', async () => withApp(async (app) => {
   const response = await app.inject('/library/sections');
   assert.match(response.body, /size="1"/);
@@ -47,7 +56,8 @@ test('playlist discovery is available at the advertised Plex routes', async () =
   for (const url of ['/playlists', '/playlists?playlistType=audio', '/playlists/all', '/playlists/1/items']) {
     const response = await app.inject({ method: 'GET', url, headers: { accept: 'application/json' } });
     assert.equal(response.statusCode, 200, url);
-    assert.equal(JSON.parse(response.body).MediaContainer.size, url.includes('/items') ? 0 : 5, url);
+    assert.equal(JSON.parse(response.body).MediaContainer.size, 0, url);
+    if (url === '/playlists/all') assert.ok(!response.body.includes('playlist://image.smart'));
   }
   const libraryPlaylistRoute = await app.inject({ method: 'GET', url: '/library/sections/1/all?type=15&playlistType=audio', headers: { accept: 'application/json' } });
   assert.equal(libraryPlaylistRoute.statusCode, 200);
