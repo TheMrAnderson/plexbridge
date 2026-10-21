@@ -78,7 +78,17 @@ a separate Plex client device. The optional login button starts the PIN-based ac
 flow. The page displays only non-secret registration status. Keep it behind trusted
 access; claim performs account-affecting Plex operations.
 
-The host HTTP port can be changed with `PLEXBRIDGE_HOST_PORT`. Identity data is stored in `./config`; do not commit that directory. GDM discovery uses UDP ports 32410, 32412, 32413, and 32414. Discovery is disabled with `PLEXBRIDGE_DISCOVERY_ENABLED=false`.
+Set `PLEXBRIDGE_PUBLIC_URL` in `.env` to an HTTPS hostname that resolves to the
+public IP of the host running PlexBridge, for example
+`https://plexbridge.example.com`. A dedicated subdomain is recommended; the
+root domain is also valid if it resolves to the same host. This value is used
+to determine the public address, while PlexBridge advertises the generated
+trusted `plex.direct` hostname to Plex. Compose passes it into the container;
+registration cannot publish PlexBridge without it. The host HTTP port can be
+changed with `PLEXBRIDGE_HOST_PORT`. Identity data is stored in `./config`; do
+not commit that directory. GDM discovery uses UDP ports 32410, 32412, 32413,
+and 32414. Discovery is disabled with
+`PLEXBRIDGE_DISCOVERY_ENABLED=false`.
 
 Set `NAVIDROME_URL`, `NAVIDROME_USERNAME`, and `NAVIDROME_PASSWORD` in `.env`. Navidrome is the current music-provider adapter; PlexBridge talks to it through a provider-neutral interface so additional music servers can be added later. In Docker, `NAVIDROME_URL` must be reachable from the PlexBridge container, typically by using the Navidrome service name on a shared Docker network.
 
