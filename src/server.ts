@@ -3,7 +3,7 @@ import { loadSettings } from './config.js';
 import { startDiscovery } from './plex/discovery.js';
 import { loadOrCreateIdentity } from './identity.js';
 import { loadPlexCertificate, plexDirectUrl } from './plex/certificate.js';
-import { startRegisteredPubSub } from './plex/registration.js';
+import { publishServer } from './plex/registration.js';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import net from 'node:net';
@@ -42,8 +42,8 @@ void (async () => {
       console.info(JSON.stringify({ event: 'pubsub_startup_skipped', reason: !credentials.serverToken ? 'server_not_claimed' : 'account_not_authenticated' }));
       return;
     }
-    console.info(JSON.stringify({ event: 'pubsub_startup_restore' }));
-    await startRegisteredPubSub(identity, settings.serverName, await plexDirectUrl(settings.configDir, settings.publicUrl), credentials.serverToken, credentials.authToken);
+    console.info(JSON.stringify({ event: 'registration_startup_restore' }));
+    await publishServer(identity, settings.serverName, await plexDirectUrl(settings.configDir, settings.publicUrl), credentials.serverToken, credentials.authToken);
   } catch (error) {
     console.warn(JSON.stringify({ event: 'pubsub_startup_failed', error: error instanceof Error ? error.message : 'unknown error' }));
   }

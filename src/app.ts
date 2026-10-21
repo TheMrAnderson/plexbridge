@@ -11,7 +11,7 @@ import { access, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createMusicProvider } from './music/provider.js';
 import type { MusicProvider } from './music/types.js';
-import { ensurePlexCertificate, plexDirectUrl } from './plex/certificate.js';
+import { ensurePlexCertificate, hasPlexCertificate, plexDirectUrl } from './plex/certificate.js';
 import { adminPage } from './plex/admin-page.js';
 import { registerPlaylistRoutes } from './plex/playlist-routes.js';
 import { registerLibraryRoutes } from './plex/library-routes.js';
@@ -49,6 +49,20 @@ export function createApp(settings: Settings, certificate?: { key: Buffer; cert:
   catch {
       return false;
   } };
+  const finishRegistration = async () => {
+    const stored = await credentials();
+    if (!stored.serverToken || !stored.authToken) return;
+    const id = await getIdentity();
+    const hadCertificate = await hasPlexCertificate(settings.configDir);
+    await ensurePlexCertificate(id, settings.configDir, stored.serverToken);
+    if (!hadCertificate) {
+      adminOperation = { state: 'register_complete', message: 'HTTPS certificate enrolled. Restart PlexBridge to finish setup.' };
+      return;
+    }
+    const registration = await publishServer(id, settings.serverName, await plexDirectUrl(settings.configDir, settings.publicUrl), stored.serverToken, stored.authToken);
+    const successful = registration.health.owned && registration.health.presence && registration.health.accessTokenReady && registration.health.connectionUrl;
+    adminOperation = { state: 'register_complete', message: successful ? 'PlexBridge is ready for Plexamp.' : 'Plex is still confirming this server. Keep PlexBridge running and refresh shortly.', registration };
+  };
   const app = Fastify({ logger: false, ...(certificate ? { https: certificate } : {}) });
   app.addContentTypeParser(['application/x-www-form-urlencoded', 'text/plain', 'application/xml'], { parseAs: 'string' }, (_request, body: string, done) => done(null, body));
   app.addHook('onRequest', async (request) => {
@@ -82,7 +96,7 @@ export function createApp(settings: Settings, certificate?: { key: Buffer; cert:
   });
   app.get('/:/eventsource/notifications', async (_request, reply) => { reply.hijack(); const response = reply.raw; response.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive' }); response.write(': \n\n'); const keepAlive = setInterval(() => response.write(': -1\n\n'), 15000); response.on('close', () => clearInterval(keepAlive)); });
   app.get('/admin', async (_request, reply) => reply.type('text/html; charset=utf-8').send(adminPage()));
-  app.get('/admin/status', async () => { const stored = await credentials(); let registration: RegistrationHealth | undefined; if (stored.serverToken) { try { registration = await getRegistrationHealth(await getIdentity(), await plexDirectUrl(settings.configDir, settings.publicUrl), stored.serverToken, stored.authToken ?? ''); } catch { /* status remains useful without cloud health */ } } return { ...adminOperation, registration }; });
+  app.get('/admin/status', async () => { const stored = await credentials(); let registration: RegistrationHealth | undefined; if (stored.serverToken) { try { registration = await getRegistrationHealth(await getIdentity(), await plexDirectUrl(settings.configDir, settings.publicUrl), stored.serverToken, stored.authToken ?? ''); } catch { /* status remains useful without cloud health */ } } return { ...adminOperation, accountAuthenticated: Boolean(stored.authToken), certificateReady: await hasPlexCertificate(settings.configDir), registration }; });
   app.post('/admin/login', async (_request, reply) => {
     if (adminOperation.state === 'login_waiting' || adminOperation.state === 'claim_running' || adminOperation.state === 'register_running') return reply.code(409).send({ ...adminOperation, message: 'An operation is already running' });
     const stored = await credentials();
@@ -93,30 +107,26 @@ export function createApp(settings: Settings, certificate?: { key: Buffer; cert:
       } catch { /* allow login to repair a stale local claim */ }
     }
     adminOperation = { state: 'login_waiting' };
-    void authenticate(await getIdentity(), settings.configDir, { onUrl: (loginUrl) => { adminOperation.loginUrl = loginUrl; }, onStatus: (state) => { if (state === 'authenticated') adminOperation.state = 'login_complete'; } }).catch((error) => { adminOperation = { state: 'error', message: error instanceof Error ? error.message : 'Plex login failed' }; });
+    void (async () => { try { await authenticate(await getIdentity(), settings.configDir, { onUrl: (loginUrl) => { adminOperation.loginUrl = loginUrl; } }); await finishRegistration(); if (adminOperation.state !== 'register_complete') adminOperation = { state: 'login_complete', message: 'Plex login complete.' }; } catch (error) { adminOperation = { state: 'error', message: error instanceof Error ? error.message : 'Plex login failed' }; } })();
     return { ...adminOperation, message: 'Open the Plex approval page' };
   });
   app.post('/admin/claim', async (request, reply) => {
     if (adminOperation.state === 'login_waiting' || adminOperation.state === 'claim_running' || adminOperation.state === 'register_running') return reply.code(409).send({ ...adminOperation, message: 'An operation is already running' });
     const body = (request.body ?? {}) as { claimToken?: string }; const pastedClaimToken = body.claimToken?.trim() ?? '';
     const stored = await credentials();
-    if (stored.serverToken && stored.authToken) {
-      try {
-        const current = await getRegistrationHealth(await getIdentity(), await plexDirectUrl(settings.configDir, settings.publicUrl), stored.serverToken, stored.authToken);
-        if (current.cloudRegistered) return reply.code(409).send({ state: 'error', message: 'PlexBridge is already registered with Plex; use Register existing claim' });
-      } catch { /* continue so a stale local claim can be repaired */ }
-    }
+    if (stored.serverToken) return reply.code(409).send({ state: 'error', message: 'This server is already claimed; sign in to Plex to finish setup' });
     if (!pastedClaimToken && !stored.authToken) return reply.code(400).send({ state: 'error', message: 'Paste a claim token or login to Plex first' });
     adminOperation = { state: 'claim_running' };
-    void (async () => { try { const id = await getIdentity(); const claimToken = pastedClaimToken || await requestClaimToken(id, settings.serverName, stored.authToken ?? ''); const serverToken = await exchangeClaimToken(id, settings.configDir, claimToken, settings.serverName); await ensurePlexCertificate(id, settings.configDir, serverToken); const registration = await publishServer(id, settings.serverName, await plexDirectUrl(settings.configDir, settings.publicUrl), serverToken, stored.authToken ?? ''); adminOperation = { state: 'claim_complete', registration }; } catch (error) { adminOperation = { state: 'error', message: error instanceof Error ? error.message : 'Plex claim failed' }; } })();
+    void (async () => { try { const id = await getIdentity(); const claimToken = pastedClaimToken || await requestClaimToken(id, settings.serverName, stored.authToken ?? ''); const serverToken = await exchangeClaimToken(id, settings.configDir, claimToken, settings.serverName); const hadCertificate = await hasPlexCertificate(settings.configDir); await ensurePlexCertificate(id, settings.configDir, serverToken); if (!hadCertificate) { adminOperation = { state: 'claim_complete', message: 'Server claimed. Restart PlexBridge once to activate HTTPS, then sign in to Plex to finish setup.' }; return; } await finishRegistration(); } catch (error) { adminOperation = { state: 'error', message: error instanceof Error ? error.message : 'Plex claim failed' }; } })();
     return { ...adminOperation, message: 'Claim and registration started' };
   });
   app.post('/admin/register', async (_request, reply) => {
     if (adminOperation.state === 'login_waiting' || adminOperation.state === 'claim_running' || adminOperation.state === 'register_running') return reply.code(409).send({ ...adminOperation, message: 'An operation is already running' });
     const stored = await credentials();
     if (!stored.serverToken) return reply.code(400).send({ state: 'error', message: 'PlexBridge is not claimed yet' });
+    if (!stored.authToken) return reply.code(400).send({ state: 'error', message: 'Sign in to Plex first; registration will resume automatically' });
     adminOperation = { state: 'register_running' };
-    void (async () => { try { const id = await getIdentity(); const certificateReady = await ensurePlexCertificate(id, settings.configDir, stored.serverToken!); const registration = await publishServer(id, settings.serverName, await plexDirectUrl(settings.configDir, settings.publicUrl), stored.serverToken!, stored.authToken ?? ''); const successful = registration.health.owned && registration.health.presence && registration.health.accessTokenReady && registration.health.connectionUrl; const message = successful ? 'Registration succeeded' : certificateReady && !certificate ? 'Certificate enrolled. Restart PlexBridge to serve Plex-direct HTTPS on port 32400, then register again.' : registration.health.presence ? `Registration published, but Plex account metadata is incomplete (publish HTTP ${registration.publishHttpStatus})` : 'Registration sent; Plex has not confirmed external reachability yet (presence=false)'; adminOperation = { state: 'register_complete', message, registration }; } catch (error) { adminOperation = { state: 'error', message: error instanceof Error ? error.message : 'Plex registration failed' }; } })();
+    void (async () => { try { await finishRegistration(); } catch (error) { adminOperation = { state: 'error', message: error instanceof Error ? error.message : 'Plex registration failed' }; } })();
     return { ...adminOperation, message: 'Registration started' };
   });
   app.post('/myplex/claim', async (request, reply) => {

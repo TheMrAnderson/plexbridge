@@ -48,14 +48,13 @@ Plex-direct certificate survive container recreation.
 After the container starts, open `http://<host>:32400/admin` in a browser. The
 normal onboarding flow is:
 
-1. Use **Login to Plex** if account authentication is needed.
-2. Paste a short-lived token from `https://www.plex.tv/claim` and choose
-   **Claim and register**, or choose **Register existing claim** for a server
-   that already has a Plex claim.
-3. Keep the container running while Plex confirms the account resource and
-   external connection.
-4. Restart the container after the first Plex-direct certificate enrollment so
-   port 32400 starts with the persisted HTTPS certificate.
+1. Paste a short-lived token from `https://www.plex.tv/claim` and choose
+   **Claim this server**.
+2. Restart the container once after the first Plex-direct certificate
+   enrollment so port 32400 starts with the persisted HTTPS certificate.
+3. Choose **Sign in to Plex** and approve the PIN. PlexBridge resumes the
+   registration automatically; no second claim or manual registration step is
+   needed.
 
 Once registered, Plexamp should discover the server through the advertised
 Plex-direct connection. Do not delete `./config` unless you intentionally want
@@ -72,11 +71,11 @@ not cover the IP address directly.
 `published`, `present`, `presence`, `accessTokenReady`, and `connectionUrl`.
 Registration is only access-token-ready when Plex has issued a non-empty server token.
 
-Open `http://127.0.0.1:32400/admin` for the basic Plex setup page. Paste a short-lived
-token from `https://www.plex.tv/claim` and use **Claim and register** to avoid creating
-a separate Plex client device. The optional login button starts the PIN-based account
-flow. The page displays only non-secret registration status. Keep it behind trusted
-access; claim performs account-affecting Plex operations.
+Open `http://127.0.0.1:32400/admin` for the guided Plex setup page. Claiming is a
+one-time action and becomes unavailable once a local claim exists. Sign-in is the
+only recovery action; after Plex account authentication, registration resumes
+automatically. The page displays only non-secret registration status. Keep it behind
+trusted access; claim and login perform account-affecting Plex operations.
 
 Set `PLEXBRIDGE_PUBLIC_URL` in `.env` to an HTTPS hostname that resolves to the
 public IP of the host running PlexBridge, for example
@@ -122,7 +121,9 @@ If the server has already been claimed, run `npm run plex:register` to republish
 
 Registration enrolls a Plex-issued `plex.direct` certificate when one is not already present. The first enrollment stores `config/plex-tls-key.pem` and `config/plex-tls-cert.pem`; restart PlexBridge afterward so port 32400 serves the trusted Plex-direct HTTPS connection used by Plexamp.
 
-The browser setup page is available at `/admin`. It disables Plex login and claim once a server token exists to prevent duplicate Plex devices, and provides a separate `Register existing claim` action for republishing an already-claimed server.
+The browser setup page is available at `/admin`. It disables claiming once a server
+token exists to prevent duplicate Plex devices and resumes registration automatically
+after account login or container restart.
 
 ## Scope and next work
 
