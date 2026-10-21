@@ -11,7 +11,7 @@ Navidrome:
 - Plexamp can discover PlexBridge and browse a real music library.
 - Artists, albums, tracks, genres, playlists, artwork, queues, downloads, and
   playlist continuation work.
-- FLAC can play directly; formats Plexamp does not accept are served as MP3
+- Plexamp-supported FLAC, MP3, AAC, and M4A/MP4 sources can play directly; unsupported formats are served as MP3
   through Navidrome transcoding.
 - Timeline updates are tracked per Plex player. After a track reaches half its
   reported duration, PlexBridge sends one Navidrome scrobble.
@@ -138,4 +138,8 @@ Not yet implemented: full Plex metadata management, search, and general-purpose
 transcoding. Additional music providers such as Jellyfin are future work. See
 [`ARCHITECTURE.md`](ARCHITECTURE.md), [`docs/plex-protocol.md`](docs/plex-protocol.md),
 and [`docs/manual-test.md`](docs/manual-test.md).
+
+Set `PLEXBRIDGE_PRESERVE_SOURCE_FORMATS=false` if you want Plexamp's requested
+download/playback bitrate and direct-play setting to control conversion. It is
+`true` by default, so supported source formats are sent unchanged whenever possible.
 

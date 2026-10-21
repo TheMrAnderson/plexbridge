@@ -1,8 +1,8 @@
 export type LogLevel = 'ERROR' | 'WARNING' | 'INFO' | 'DEBUG' | 'TRACE';
 
-function booleanValue(value: string | undefined, fallback: boolean): boolean {
+function booleanValue(name: string, value: string | undefined, fallback: boolean): boolean {
   if (value === undefined) return fallback;
-  if (!['true', 'false'].includes(value.toLowerCase())) throw new Error('PLEXBRIDGE_DISCOVERY_ENABLED must be true or false');
+  if (!['true', 'false'].includes(value.toLowerCase())) throw new Error(`${name} must be true or false`);
   return value.toLowerCase() === 'true';
 }
 
@@ -12,6 +12,7 @@ export interface Settings {
   serverName: string;
   publicUrl: string;
   discoveryEnabled: boolean;
+  preserveSourceFormats: boolean;
   logLevel: LogLevel;
   configDir: string;
   navidromeUrl: string;
@@ -29,7 +30,8 @@ export function loadSettings(env = process.env): Settings {
     port,
     serverName: env.PLEXBRIDGE_SERVER_NAME ?? 'PlexBridge',
     publicUrl: env.PLEXBRIDGE_PUBLIC_URL ?? '',
-    discoveryEnabled: booleanValue(env.PLEXBRIDGE_DISCOVERY_ENABLED, true),
+    discoveryEnabled: booleanValue('PLEXBRIDGE_DISCOVERY_ENABLED', env.PLEXBRIDGE_DISCOVERY_ENABLED, true),
+    preserveSourceFormats: booleanValue('PLEXBRIDGE_PRESERVE_SOURCE_FORMATS', env.PLEXBRIDGE_PRESERVE_SOURCE_FORMATS, true),
     logLevel,
     configDir: env.PLEXBRIDGE_CONFIG_DIR ?? './config',
     navidromeUrl: env.NAVIDROME_URL ?? '',

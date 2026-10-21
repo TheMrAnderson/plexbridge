@@ -8,15 +8,15 @@ interface RouteApp {
   get(path: string, handler: (request: any, reply: any) => unknown): unknown;
   post(path: string, handler: (request: any, reply: any) => unknown): unknown;
 }
-
 interface LibraryRouteDependencies {
   music: MusicProvider;
   playQueues: Map<string, { item: PlexItem; sourceUri: string; response?: string }>;
   playlistIds: Map<string, string>;
   loadPlaylistIds: () => Promise<void>;
+  preserveSourceFormats: boolean;
 }
 
-export function registerLibraryRoutes(app: RouteApp, { music, playQueues, playlistIds, loadPlaylistIds }: LibraryRouteDependencies): void {
+export function registerLibraryRoutes(app: RouteApp, { music, playQueues, playlistIds, loadPlaylistIds, preserveSourceFormats }: LibraryRouteDependencies): void {
   const xml = (body: string) => ({ body, type: 'application/xml; charset=utf-8' });
   let nextPlayQueueId = 1;
   let lastArtworkTrackId: string | undefined;
@@ -210,7 +210,7 @@ export function registerLibraryRoutes(app: RouteApp, { music, playQueues, playli
       return reply.code(404).send('Unknown track\n'); try {
       const source = await music.song(parsed.id);
       const sourceFormat = (source.suffix ?? source.contentType?.split('/')[1] ?? 'mp3').toLowerCase();
-      const streamUrl = directPlayableFormats.has(sourceFormat) ? await music.streamUrl(parsed.id) : await music.streamUrl(parsed.id, { format: 'mp3' });
+      const streamUrl = preserveSourceFormats && directPlayableFormats.has(sourceFormat) ? await music.streamUrl(parsed.id) : await music.streamUrl(parsed.id, { format: 'mp3' });
       const response = await fetch(streamUrl);
       if (!response.ok || !response.body)
           return reply.code(502).send('Navidrome stream unavailable\n');
@@ -222,19 +222,63 @@ export function registerLibraryRoutes(app: RouteApp, { music, playQueues, playli
   catch {
       return reply.code(502).send('Navidrome stream unavailable\n');
   } });
+  app.get('/audio/:/transcode/universal/decision', async (request, reply) => {
+      const match = /(?:^|\/)library\/metadata\/(s-[^/?#]+)/.exec(String(request.query.path ?? ''));
+      const parsed = match ? parseKey(match[1]) : undefined;
+      if (!parsed || parsed.kind !== 's')
+          return reply.code(404).send('Unknown track\n');
+      try {
+          const source = await music.song(parsed.id);
+          const sourceFormat = (source.suffix ?? source.contentType?.split('/')[1] ?? 'mp3').toLowerCase();
+          const item = songItem(source);
+          const directPlayRequested = request.query.directPlay !== '0';
+          const directPlayable = preserveSourceFormats && directPlayableFormats.has(sourceFormat);
+          console.debug(JSON.stringify({ event: 'audio_decision', sourceFormat, directPlayRequested, directPlayOverridden: directPlayable && !directPlayRequested, directPlayable, preserveSourceFormats, musicBitrate: request.query.musicBitrate ?? '', clientProfile: request.headers['x-plex-client-profile-extra'] ?? '' }));
+          const metadata = JSON.parse(libraryItemsJson([item], 'track')).MediaContainer.Metadata[0] as Record<string, unknown>;
+          if (Array.isArray(metadata.Media)) {
+              const media = metadata.Media[0] as Record<string, unknown>;
+              media.container = directPlayable ? sourceFormat : 'mp3';
+              media.audioCodec = directPlayable ? media.audioCodec : 'mp3';
+              const part = Array.isArray(media.Part) ? media.Part[0] as Record<string, unknown> : undefined;
+              if (part) {
+                  part.container = directPlayable ? sourceFormat : 'mp3';
+                  part.decision = directPlayable ? 'directplay' : 'transcode';
+                  part.selected = true;
+              }
+          }
+          return reply.type('application/json').send({ MediaContainer: {
+              allowSync: '1',
+              directPlayDecisionCode: directPlayable ? 1000 : 3000,
+              directPlayDecisionText: directPlayable ? 'Direct play OK.' : 'Direct play not available; Conversion OK.',
+              generalDecisionCode: 1000,
+              generalDecisionText: directPlayable ? 'Direct play OK.' : 'Direct play not available; Conversion OK.',
+              identifier: 'com.plexapp.plugins.library',
+              librarySectionID: '1',
+              librarySectionTitle: 'Music',
+              size: 1,
+              transcodeDecisionCode: 1001,
+              transcodeDecisionText: 'Conversion OK.',
+              Metadata: [metadata]
+          } });
+      }
+      catch {
+          return reply.code(503).send('Navidrome is unavailable\n');
+      }
+  });
   app.get('/audio/:/transcode/universal/start', async (request, reply) => {
       const query = request.query;
       const match = /(?:^|\/)library\/metadata\/(s-[^/?#]+)/.exec(String(query.path ?? ''));
       const parsed = match ? parseKey(match[1]) : undefined;
       if (!parsed || parsed.kind !== 's')
           return reply.code(404).send('Unknown track\n');
-      const directPlay = query.directPlay === '1';
+          const directPlay = query.directPlay === '1';
       const requestedBitrate = Number(query.musicBitrate);
       const maxBitRate = Number.isFinite(requestedBitrate) && requestedBitrate > 0 ? Math.min(Math.max(Math.round(requestedBitrate), 32), 320) : undefined;
       try {
           const source = await music.song(parsed.id);
           const sourceFormat = (source.suffix ?? source.contentType?.split('/')[1] ?? 'mp3').toLowerCase();
-          const canDirectPlay = directPlay && directPlayableFormats.has(sourceFormat);
+          const canDirectPlay = preserveSourceFormats && directPlayableFormats.has(sourceFormat);
+          console.debug(JSON.stringify({ event: 'audio_stream', sourceFormat, directPlayRequested: directPlay, directPlayOverridden: canDirectPlay && !directPlay, canDirectPlay, preserveSourceFormats, outputFormat: canDirectPlay ? sourceFormat : 'mp3', musicBitrate: query.musicBitrate ?? '', clientProfile: request.headers['x-plex-client-profile-extra'] ?? '' }));
           const streamUrl = await music.streamUrl(parsed.id, canDirectPlay ? {} : { format: 'mp3', maxBitRate });
           const response = await fetch(streamUrl);
           if (!response.ok || !response.body)
@@ -248,6 +292,7 @@ export function registerLibraryRoutes(app: RouteApp, { music, playQueues, playli
           return reply.code(502).send('Navidrome stream unavailable\n');
       }
   });
+  app.get('/audio/:/transcode/universal/stop', async (_request, reply) => reply.type('application/json').send({ MediaContainer: { size: 0 } }));
   app.get('/photo/:/transcode', async (request, reply) => {
       const rawUrl = String(request.query.url ?? '');
       let url = rawUrl;
@@ -315,4 +360,3 @@ export function registerLibraryRoutes(app: RouteApp, { music, playQueues, playli
       return reply.code(502).send('Navidrome artwork unavailable\n');
   } });
 }
-

@@ -1,7 +1,10 @@
 import type { MusicAlbum, MusicArtist, MusicSong } from '../music/types.js';
 import type { PlexItem } from './protocol.js';
 
-export const directPlayableFormats = new Set(['flac']);
+// Formats Plexamp can consume without asking PlexBridge to convert them.
+// Opus and other formats stay on the MP3 fallback until their client support
+// is verified against a real Plexamp playback/download request.
+export const directPlayableFormats = new Set(['flac', 'mp3', 'aac', 'm4a', 'mp4']);
 
 export function plexAudioCodec(format: string, contentType?: string): string {
   if (format === 'mp3' || contentType === 'audio/mpeg') return 'mp3';

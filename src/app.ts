@@ -87,7 +87,7 @@ export function createApp(settings: Settings, certificate?: { key: Buffer; cert:
   app.get('/hubs/sections/:id', async (request, reply) => { if ((request.params as { id: string }).id !== '1')
       return reply.code(404).send('Unknown library section\n'); return request.headers.accept?.includes('application/json') ? reply.type('application/json').send(libraryHubsJson()) : reply.type(xml('').type).send(libraryHubs()); });
   registerPlaylistRoutes(app, { music: navidrome, playlistIds: plexPlaylistIds, loadPlaylistIds, savePlaylistIds });
-  registerLibraryRoutes(app, { music: navidrome, playQueues, playlistIds: plexPlaylistIds, loadPlaylistIds });
+  registerLibraryRoutes(app, { music: navidrome, playQueues, playlistIds: plexPlaylistIds, loadPlaylistIds, preserveSourceFormats: settings.preserveSourceFormats });
   app.get('/health', async () => {
     const id = await getIdentity(); const stored = await credentials();
     let registration: RegistrationHealth = { claimed: Boolean(stored.serverToken), cloudRegistered: false, published: false, present: false, owned: false, presence: false, accessTokenReady: false, connectionUrl: false, state: 'not-claimed' };

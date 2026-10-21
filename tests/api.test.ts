@@ -66,6 +66,9 @@ test('playback control endpoints return PMS-compatible success responses', async
   const firstCharacter = await app.inject({ method: 'GET', url: '/library/sections/1/firstCharacter?type=8', headers: { accept: 'application/json' } });
   assert.equal(firstCharacter.statusCode, 200);
   assert.equal(JSON.parse(firstCharacter.body).MediaContainer.title2, 'By First Letter');
+  const transcodeStop = await app.inject({ method: 'GET', url: '/audio/:/transcode/universal/stop?session=test' });
+  assert.equal(transcodeStop.statusCode, 200);
+  assert.deepEqual(JSON.parse(transcodeStop.body), { MediaContainer: { size: 0 } });
   assert.equal((await app.inject({ method: 'GET', url: '/photo/:/transcode' })).statusCode, 404);
 }));
 
