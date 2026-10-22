@@ -10,4 +10,3 @@
 For the emulated server-side claim experiment, obtain a fresh short-lived claim token and send it to `POST /myplex/claim?token=...` while PlexBridge is running. The endpoint performs the cloud exchange without requiring a real Plex Media Server. Verify `/identity` reports `claimed="1"`, then verify the server appears in Plex account resources.
 
 Success requires Plexamp to connect and request the synthetic library. A running container, a valid XML response, or a claim-token response alone is not success.
-

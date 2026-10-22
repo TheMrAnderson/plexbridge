@@ -24,6 +24,7 @@ type RouteReply = FastifyReply;
 interface RouteApp {
   get(path: string, handler: (request: RouteRequest, reply: RouteReply) => unknown): unknown;
   post(path: string, handler: (request: RouteRequest, reply: RouteReply) => unknown): unknown;
+  put(path: string, handler: (request: RouteRequest, reply: RouteReply) => unknown): unknown;
 }
 export interface PlayRecord {
   trackId: string;
@@ -57,6 +58,9 @@ interface PlaybackState {
   fallbackTimer?: ReturnType<typeof setTimeout>;
 }
 
+const SCROBBLE_THRESHOLD = 0.75;
+const FALLBACK_THRESHOLD = 1.1;
+
 export function registerLibraryRoutes(
   app: RouteApp,
   {
@@ -81,8 +85,13 @@ export function registerLibraryRoutes(
         request.headers['user-agent'] ??
         'unknown-player'
     );
-  const trackRatingKey = (query: { ratingKey?: string; key?: string }) =>
-    query.ratingKey ?? query.key?.match(/\/library\/metadata\/(s-[^/?#]+)/)?.[1] ?? '';
+  const trackRatingKey = (query: { ratingKey?: string; key?: string }) => {
+    const value = query.ratingKey ?? query.key?.match(/\/library\/metadata\/([^/?#]+)/)?.[1] ?? '';
+    if (!value) return '';
+    // Plex clients commonly send the numeric/source ID without the type prefix,
+    // even though PlexBridge advertises track rating keys as `s-<id>`.
+    return value.startsWith('s-') ? value : `s-${value}`;
+  };
   const isActiveState = (state: string) => state === 'playing' || state === 'buffering';
   const clearFallbackTimer = (state: PlaybackState | undefined) => {
     if (state?.fallbackTimer !== undefined) clearTimeoutFn(state.fallbackTimer);
@@ -167,7 +176,7 @@ export function registerLibraryRoutes(
   const scheduleFallbackTimer = (playerKey: string, current: PlaybackState) => {
     clearFallbackTimer(current);
     if (current.scrobbled || current.durationMs <= 0 || !isActiveState(current.lastState)) return;
-    const remainingMs = Math.max(0, current.durationMs * 1.1 - current.activeMs);
+    const remainingMs = Math.max(0, current.durationMs * FALLBACK_THRESHOLD - (current.maxTimeMs + current.activeMs));
     current.fallbackTimer = setTimeoutFn(() => {
       const live = playback.get(playerKey);
       if (live !== current || live.scrobbled || !isActiveState(live.lastState)) return;
@@ -200,6 +209,16 @@ export function registerLibraryRoutes(
     )
       return;
     const sameTrack = previous?.ratingKey === ratingKey;
+    if (previous && !sameTrack) {
+      if (isActiveState(previous.lastState)) {
+        previous.activeMs += Math.max(0, signalMs - previous.lastSignalMs);
+        previous.lastSignalMs = signalMs;
+      }
+      const previousProgressMs = previous.maxTimeMs + previous.activeMs;
+      const previousReachedThreshold = previousProgressMs >= previous.durationMs * SCROBBLE_THRESHOLD;
+      if (!previous.scrobbled && previous.durationMs > 0 && previousReachedThreshold)
+        await scrobblePlayback(playerKey, previous, 'timeline');
+    }
     clearFallbackTimer(previous);
     const activeSinceLastSignal =
       sameTrack && ['playing', 'buffering'].includes(previous.lastState)
@@ -234,13 +253,14 @@ export function registerLibraryRoutes(
     }
     playback.set(playerKey, current);
     const activeMs = current.activeMs;
-    const halfway = current.maxTimeMs >= current.durationMs / 2;
-    const estimatedComplete = activeMs >= current.durationMs * 1.1;
+    const reachedScrobbleThreshold = current.maxTimeMs >= current.durationMs * SCROBBLE_THRESHOLD;
+    const effectiveProgressMs = current.maxTimeMs + activeMs;
+    const estimatedComplete = effectiveProgressMs >= current.durationMs * FALLBACK_THRESHOLD;
     if (
       current.scrobbled ||
       current.durationMs <= 0 ||
       !['playing', 'buffering', 'stopped'].includes(state) ||
-      (!halfway && !estimatedComplete)
+      (!reachedScrobbleThreshold && !estimatedComplete)
     )
       return scheduleFallbackTimer(playerKey, current);
     await scrobblePlayback(playerKey, current, 'timeline');
@@ -400,8 +420,14 @@ export function registerLibraryRoutes(
   };
   app.get('/:/timeline', timeline);
   app.post('/:/timeline', timeline);
+  app.put('/:/timeline', timeline);
   app.get('/:/scrobble', scrobble);
   app.post('/:/scrobble', scrobble);
+  app.put('/:/rate', async (request, reply) => {
+    logPlaybackSignal('plex_rate', request);
+    await recordExplicitScrobble(request);
+    return reply.type('application/json').send(timelineJson());
+  });
   app.get('/:/unscrobble', unscrobble);
   app.post('/:/unscrobble', unscrobble);
   app.post('/playQueues', async (request, reply) => {

@@ -132,10 +132,15 @@ test('playback control endpoints return PMS-compatible success responses', async
       (await app.inject({ method: 'POST', url: '/:/timeline?state=playing&time=30&duration=121000' })).statusCode,
       200
     );
+    assert.equal(
+      (await app.inject({ method: 'PUT', url: '/:/timeline?state=playing&time=30&duration=121000' })).statusCode,
+      200
+    );
     assert.equal((await app.inject({ method: 'GET', url: '/:/scrobble?ratingKey=s-test&time=30' })).statusCode, 200);
     assert.equal((await app.inject({ method: 'POST', url: '/:/scrobble?ratingKey=s-test&time=30' })).statusCode, 200);
     assert.equal((await app.inject({ method: 'GET', url: '/:/unscrobble?ratingKey=s-test' })).statusCode, 200);
     assert.equal((await app.inject({ method: 'POST', url: '/:/unscrobble?ratingKey=s-test' })).statusCode, 200);
+    assert.equal((await app.inject({ method: 'PUT', url: '/:/rate?ratingKey=s-test&rating=10' })).statusCode, 200);
     const firstCharacter = await app.inject({
       method: 'GET',
       url: '/library/sections/1/firstCharacter?type=8',
@@ -168,6 +173,27 @@ test('explicit Plex scrobbles are forwarded to the music provider', async () => 
     assert.equal(response.statusCode, 200);
   }, musicProvider);
   assert.deepEqual(scrobbled, ['track-42']);
+});
+
+test('Plex rate requests are treated as explicit scrobbles', async () => {
+  const scrobbled: string[] = [];
+  const musicProvider = new Proxy({} as MusicProvider, {
+    get: (_target, property) =>
+      property === 'scrobble'
+        ? async (id: string) => {
+            scrobbled.push(id);
+          }
+        : async () => []
+  }) as MusicProvider;
+  await withApp(async (app) => {
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/:/rate?ratingKey=s-track-49&rating=10',
+      headers: { accept: 'application/json' }
+    });
+    assert.equal(response.statusCode, 200);
+  }, musicProvider);
+  assert.deepEqual(scrobbled, ['track-49']);
 });
 
 test('explicit and timeline scrobbles do not submit the same track twice', async () => {
@@ -214,6 +240,28 @@ test('scrobbles accept Plex metadata keys as well as rating keys', async () => {
   assert.deepEqual(scrobbled, ['track-43', 'track-44']);
 });
 
+test('scrobbles accept bare Plex rating keys and metadata paths', async () => {
+  const scrobbled: string[] = [];
+  const musicProvider = new Proxy({} as MusicProvider, {
+    get: (_target, property) =>
+      property === 'scrobble'
+        ? async (id: string) => {
+            scrobbled.push(id);
+          }
+        : async () => []
+  }) as MusicProvider;
+  await withApp(async (app) => {
+    const headers = { 'x-plex-client-identifier': 'player-bare-key', accept: 'application/json' };
+    await app.inject({ method: 'POST', url: '/:/scrobble?ratingKey=track-45&time=90000', headers });
+    await app.inject({
+      method: 'POST',
+      url: '/:/timeline?key=%2Flibrary%2Fmetadata%2Ftrack-46&state=stopped&time=90000&duration=120000',
+      headers
+    });
+  }, musicProvider);
+  assert.deepEqual(scrobbled, ['track-45', 'track-46']);
+});
+
 test('timeline retains a player track duration when a later update omits it', async () => {
   const scrobbled: string[] = [];
   const musicProvider = new Proxy({} as MusicProvider, {
@@ -231,9 +279,117 @@ test('timeline retains a player track duration when a later update omits it', as
       url: '/:/timeline?state=playing&ratingKey=s-track-45&time=1000&duration=120000',
       headers
     });
-    await app.inject({ method: 'POST', url: '/:/timeline?state=playing&ratingKey=s-track-45&time=60000', headers });
+    await app.inject({ method: 'POST', url: '/:/timeline?state=playing&ratingKey=s-track-45&time=90000', headers });
   }, musicProvider);
   assert.deepEqual(scrobbled, ['track-45']);
+});
+
+test('a new track finalizes a previous track when Plexamp only reports track starts', async () => {
+  const scrobbled: string[] = [];
+  let clock = 0;
+  const musicProvider = new Proxy({} as MusicProvider, {
+    get: (_target, property) =>
+      property === 'scrobble'
+        ? async (id: string) => {
+            scrobbled.push(id);
+          }
+        : async () => []
+  }) as MusicProvider;
+  await withApp(
+    async (app) => {
+      const headers = { 'x-plex-client-identifier': 'player-track-starts', accept: 'application/json' };
+      await app.inject({
+        method: 'POST',
+        url: '/:/timeline?state=playing&ratingKey=s-track-50&time=67&duration=199000',
+        headers
+      });
+      clock = 199000;
+      await app.inject({
+        method: 'POST',
+        url: '/:/timeline?state=playing&ratingKey=s-track-51&time=67&duration=222000',
+        headers
+      });
+    },
+    musicProvider,
+    () => clock,
+    {
+      setTimeout: () => ({}) as ReturnType<typeof setTimeout>,
+      clearTimeout: () => undefined
+    }
+  );
+  assert.deepEqual(scrobbled, ['track-50']);
+});
+
+test('a skipped track is not scrobbled when the next track starts early', async () => {
+  const scrobbled: string[] = [];
+  let clock = 0;
+  const musicProvider = new Proxy({} as MusicProvider, {
+    get: (_target, property) =>
+      property === 'scrobble'
+        ? async (id: string) => {
+            scrobbled.push(id);
+          }
+        : async () => []
+  }) as MusicProvider;
+  await withApp(
+    async (app) => {
+      const headers = { 'x-plex-client-identifier': 'player-skips', accept: 'application/json' };
+      await app.inject({
+        method: 'POST',
+        url: '/:/timeline?state=playing&ratingKey=s-track-skip&time=67&duration=199000',
+        headers
+      });
+      clock = 10000;
+      await app.inject({
+        method: 'POST',
+        url: '/:/timeline?state=playing&ratingKey=s-track-next&time=67&duration=222000',
+        headers
+      });
+    },
+    musicProvider,
+    () => clock,
+    {
+      setTimeout: () => ({}) as ReturnType<typeof setTimeout>,
+      clearTimeout: () => undefined
+    }
+  );
+  assert.deepEqual(scrobbled, []);
+});
+
+test('a track started mid-song scrobbles after crossing 75% effective progress', async () => {
+  const scrobbled: string[] = [];
+  let clock = 0;
+  const musicProvider = new Proxy({} as MusicProvider, {
+    get: (_target, property) =>
+      property === 'scrobble'
+        ? async (id: string) => {
+            scrobbled.push(id);
+          }
+        : async () => []
+  }) as MusicProvider;
+  await withApp(
+    async (app) => {
+      const headers = { 'x-plex-client-identifier': 'player-mid-song', accept: 'application/json' };
+      await app.inject({
+        method: 'POST',
+        url: '/:/timeline?state=playing&ratingKey=s-track-mid&time=100000&duration=199000',
+        headers
+      });
+      clock = 60000;
+      await app.inject({
+        method: 'POST',
+        url: '/:/timeline?state=playing&ratingKey=s-track-next&time=67&duration=222000',
+        headers
+      });
+    },
+    musicProvider,
+    () => clock,
+    {
+      setTimeout: () => ({}) as ReturnType<typeof setTimeout>,
+      clearTimeout: () => undefined
+    }
+  );
+  assert.deepEqual(scrobbled, ['track-mid']);
 });
 
 test('durationless timelines estimate song duration and scrobble after 110% active time', async () => {
