@@ -15,7 +15,12 @@ export function plexAuthClientIdentifier(identity: Identity): string {
   return `${identity.machineIdentifier}-auth`;
 }
 
-export function plexServerHeaders(identity: Identity, serverName: string, token?: string, clientIdentifier = identity.machineIdentifier): Record<string, string> {
+export function plexServerHeaders(
+  identity: Identity,
+  serverName: string,
+  token?: string,
+  clientIdentifier = identity.machineIdentifier
+): Record<string, string> {
   return {
     Accept: '*/*',
     'User-Agent': `PlexMediaServer/${PLEX_SERVER_VERSION}`,
@@ -29,6 +34,6 @@ export function plexServerHeaders(identity: Identity, serverName: string, token?
     'X-Plex-Model': PLEX_SERVER_MODEL,
     'X-Plex-Device-Vendor': PLEX_SERVER_VENDOR,
     'X-Plex-Client-Identifier': clientIdentifier,
-    ...(token ? { 'X-Plex-Token': token } : {}),
+    ...(token ? { 'X-Plex-Token': token } : {})
   };
 }

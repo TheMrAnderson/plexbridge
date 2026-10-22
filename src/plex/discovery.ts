@@ -3,19 +3,33 @@ import dgram from 'node:dgram';
 export const GDM_PORTS = [32410, 32412, 32413, 32414] as const;
 
 export function startDiscovery(name: string, port: number, machineIdentifier: string): dgram.Socket[] {
-  const response = Buffer.from(`HTTP/1.0 200 OK\r\nName: ${name}\r\nPort: ${port}\r\nResource-Identifier: ${machineIdentifier}\r\nProtocol: plex\r\n\r\n`);
+  const response = Buffer.from(
+    `HTTP/1.0 200 OK\r\nName: ${name}\r\nPort: ${port}\r\nResource-Identifier: ${machineIdentifier}\r\nProtocol: plex\r\n\r\n`
+  );
   const sockets: dgram.Socket[] = [];
   for (const discoveryPort of GDM_PORTS) {
     const socket = dgram.createSocket('udp4');
     socket.on('message', (message, remote) => {
-      if (message.toString().startsWith('M-SEARCH') || message.toString().includes('HTTP/1.1')) socket.send(response, remote.port, remote.address);
+      if (message.toString().startsWith('M-SEARCH') || message.toString().includes('HTTP/1.1'))
+        socket.send(response, remote.port, remote.address);
     });
-    socket.on('error', (error) => console.warn(JSON.stringify({ event: 'discovery_error', port: discoveryPort, error: error.message })));
-    try { socket.bind(discoveryPort, '0.0.0.0'); sockets.push(socket); console.info(JSON.stringify({ event: 'discovery_listener_active', port: discoveryPort })); } catch (error: any) {
-      console.warn(JSON.stringify({ event: 'discovery_unavailable', port: discoveryPort, error: error.message }));
+    socket.on('error', (error) =>
+      console.warn(JSON.stringify({ event: 'discovery_error', port: discoveryPort, error: error.message }))
+    );
+    try {
+      socket.bind(discoveryPort, '0.0.0.0');
+      sockets.push(socket);
+      console.info(JSON.stringify({ event: 'discovery_listener_active', port: discoveryPort }));
+    } catch (error) {
+      console.warn(
+        JSON.stringify({
+          event: 'discovery_unavailable',
+          port: discoveryPort,
+          error: error instanceof Error ? error.message : 'unknown error'
+        })
+      );
       socket.close();
     }
   }
   return sockets;
 }
-

@@ -1,9 +1,58 @@
-body { font: 16px system-ui, sans-serif; max-width: 680px; margin: 48px auto; padding: 0 20px; background: #111; color: #eee; }
-button { font: inherit; padding: 12px 18px; margin: 8px 8px 8px 0; border: 0; border-radius: 8px; background: #e5a400; color: #111; font-weight: 700; cursor: pointer; }
-button:disabled { opacity: .45; cursor: not-allowed; }
-input { box-sizing: border-box; width: 100%; padding: 12px; border-radius: 8px; border: 1px solid #555; background: #292929; color: #fff; margin: 8px 0; }
-a { color: #ffd35a; word-break: break-all; }
-.card { background: #1d1d1d; border-radius: 12px; padding: 24px; margin-top: 20px; }
-pre { white-space: pre-wrap; color: #bbb; }
-.hint { color: #aaa; font-size: .9em; }
-.step { font-size: 1.1em; color: #ffd35a; margin: 18px 0 8px; }
+body {
+  font:
+    16px system-ui,
+    sans-serif;
+  max-width: 680px;
+  margin: 48px auto;
+  padding: 0 20px;
+  background: #111;
+  color: #eee;
+}
+button {
+  font: inherit;
+  padding: 12px 18px;
+  margin: 8px 8px 8px 0;
+  border: 0;
+  border-radius: 8px;
+  background: #e5a400;
+  color: #111;
+  font-weight: 700;
+  cursor: pointer;
+}
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid #555;
+  background: #292929;
+  color: #fff;
+  margin: 8px 0;
+}
+a {
+  color: #ffd35a;
+  word-break: break-all;
+}
+.card {
+  background: #1d1d1d;
+  border-radius: 12px;
+  padding: 24px;
+  margin-top: 20px;
+}
+pre {
+  white-space: pre-wrap;
+  color: #bbb;
+}
+.hint {
+  color: #aaa;
+  font-size: 0.9em;
+}
+.step {
+  font-size: 1.1em;
+  color: #ffd35a;
+  margin: 18px 0 8px;
+}

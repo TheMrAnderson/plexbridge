@@ -4,4 +4,3 @@ import { authenticate } from '../plex/auth.js';
 
 const settings = loadSettings();
 await authenticate(await loadOrCreateIdentity(settings.configDir), settings.configDir);
-

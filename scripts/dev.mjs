@@ -17,16 +17,19 @@ async function oldPlexBridgePids() {
 
 for (const pid of await oldPlexBridgePids()) {
   console.log(`Stopping previous PlexBridge process ${pid}`);
-  try { process.kill(pid, 'SIGTERM'); } catch { /* already stopped */ }
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch {
+    /* already stopped */
+  }
 }
 if ((await oldPlexBridgePids()).length) await new Promise((resolve) => setTimeout(resolve, 500));
 
 const child = spawn(process.execPath, ['--env-file-if-exists=.env', 'dist/src/server.js'], {
   env: { ...process.env, PLEXBRIDGE_CONFIG_DIR: './config' },
-  stdio: 'inherit',
+  stdio: 'inherit'
 });
 const stop = (signal) => child.kill(signal);
 process.on('SIGINT', () => stop('SIGINT'));
 process.on('SIGTERM', () => stop('SIGTERM'));
 child.on('exit', (code, signal) => process.exit(code ?? (signal ? 1 : 0)));
-

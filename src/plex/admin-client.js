@@ -22,7 +22,9 @@ function show(state) {
   else step.textContent = 'PlexBridge is ready for Plexamp';
 
   status.textContent = state.state + (state.message ? ` — ${state.message}` : '');
-  url.innerHTML = state.loginUrl ? `<a target="_blank" rel="noreferrer" href="${state.loginUrl}">Open Plex approval page</a>` : '';
+  url.innerHTML = state.loginUrl
+    ? `<a target="_blank" rel="noreferrer" href="${state.loginUrl}">Open Plex approval page</a>`
+    : '';
   details.textContent = state.registration ? JSON.stringify(state.registration, null, 2) : '';
 }
 
@@ -39,7 +41,7 @@ async function post(path, body) {
   const response = await fetch(path, {
     method: 'POST',
     headers: body ? { 'content-type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
+    body: body ? JSON.stringify(body) : undefined
   });
   show(await response.json());
   refresh();

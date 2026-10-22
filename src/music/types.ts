@@ -1,9 +1,50 @@
-export interface MusicArtist { id: string; name: string; coverArt?: string }
-export interface MusicAlbum { id: string; name: string; artist?: string; artistId?: string; year?: number; coverArt?: string }
-export interface MusicSong { id: string; title: string; album?: string; albumId?: string; artist?: string; artistId?: string; genre?: string; track?: number; year?: number; duration?: number; coverArt?: string; suffix?: string; contentType?: string; bitRate?: number; size?: number }
-export interface MusicGenre { name: string; songCount?: number; albumCount?: number }
-export interface MusicPlaylist { id: string; name: string; comment?: string; songCount: number; duration: number; coverArt?: string }
-export interface MusicPlaylistResult { playlist: MusicPlaylist; songs: MusicSong[] }
+export interface MusicArtist {
+  id: string;
+  name: string;
+  coverArt?: string;
+}
+export interface MusicAlbum {
+  id: string;
+  name: string;
+  artist?: string;
+  artistId?: string;
+  year?: number;
+  coverArt?: string;
+}
+export interface MusicSong {
+  id: string;
+  title: string;
+  album?: string;
+  albumId?: string;
+  artist?: string;
+  artistId?: string;
+  genre?: string;
+  track?: number;
+  year?: number;
+  duration?: number;
+  coverArt?: string;
+  suffix?: string;
+  contentType?: string;
+  bitRate?: number;
+  size?: number;
+}
+export interface MusicGenre {
+  name: string;
+  songCount?: number;
+  albumCount?: number;
+}
+export interface MusicPlaylist {
+  id: string;
+  name: string;
+  comment?: string;
+  songCount: number;
+  duration: number;
+  coverArt?: string;
+}
+export interface MusicPlaylistResult {
+  playlist: MusicPlaylist;
+  songs: MusicSong[];
+}
 
 export interface MusicProvider {
   artists(): Promise<MusicArtist[]>;

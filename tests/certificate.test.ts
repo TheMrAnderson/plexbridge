@@ -16,18 +16,35 @@ test('certificate request matches the captured PMS CSR profile', async () => {
     const commonName = '*.93da506c1c094c7287d11f9b5b9390b4.plex.direct';
     const key = join(dir, 'key.pem');
     const csr = join(dir, 'request.pem');
-    await execFile('openssl', ['req', '-new', '-newkey', 'rsa:2048', '-nodes', '-keyout', key, '-out', csr, '-subj', `/CN=${commonName}`]);
+    await execFile('openssl', [
+      'req',
+      '-new',
+      '-newkey',
+      'rsa:2048',
+      '-nodes',
+      '-keyout',
+      key,
+      '-out',
+      csr,
+      '-subj',
+      `/CN=${commonName}`
+    ]);
     const formatted = formatPlexCertificateRequest(await readFile(csr, 'utf8'));
     assert.match(formatted, /^-----BEGIN CERTIFICATE REQUEST-----/);
     assert.match(formatted, /-----END CERTIFICATE REQUEST-----$/);
-    assert.match(formatted, /-----BEGIN CERTIFICATE REQUEST-----\nMIICfjCCAWYCAQAwOTE3MDUGA1UEAwwuKi45M2RhNTA2YzFjMDk0YzcyODdkMTFm/);
+    assert.match(
+      formatted,
+      /-----BEGIN CERTIFICATE REQUEST-----\nMIICfjCCAWYCAQAwOTE3MDUGA1UEAwwuKi45M2RhNTA2YzFjMDk0YzcyODdkMTFm/
+    );
 
-    const body = formatted.match(/^-----BEGIN CERTIFICATE REQUEST-----([\s\S]+)-----END CERTIFICATE REQUEST-----$/)?.[1];
+    const body = formatted.match(
+      /^-----BEGIN CERTIFICATE REQUEST-----([\s\S]+)-----END CERTIFICATE REQUEST-----$/
+    )?.[1];
     assert.ok(body);
     const der = join(dir, 'formatted.der');
     await writeFile(der, Buffer.from(body, 'base64'));
     const asn = (await execFile('openssl', ['asn1parse', '-inform', 'DER', '-in', der])).stdout;
-    assert.match(asn, /^    0:d=0 .*cons: SEQUENCE/);
+    assert.match(asn, /^ {4}0:d=0 .*cons: SEQUENCE/);
     const details = (await execFile('openssl', ['req', '-in', csr, '-noout', '-text'])).stdout;
     assert.ok(details.includes(`Subject: CN=${commonName}`));
     assert.match(details, /Public-Key: \(2048 bit\)/);
@@ -44,7 +61,8 @@ test('certificate enrollment sends the captured multipart field shape', async ()
   let downloadAttempt = 0;
   const fetchImpl: typeof fetch = async (input, init) => {
     const url = String(input);
-    if (url.endsWith('/certificate/subject')) return new Response('<subject commonName="*.93da506c1c094c7287d11f9b5b9390b4.plex.direct"/>', { status: 200 });
+    if (url.endsWith('/certificate/subject'))
+      return new Response('<subject commonName="*.93da506c1c094c7287d11f9b5b9390b4.plex.direct"/>', { status: 200 });
     if (url.includes('/certificate/csr?')) {
       const request = new Request(url, init);
       requests.push({ url, body: await request.text() });

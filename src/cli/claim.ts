@@ -13,8 +13,22 @@ const credentials = JSON.parse(await readFile(credentialsPath, 'utf8')) as { aut
 if (!credentials.authToken) throw new Error('No Plex account token found. Run npm run plex:login first.');
 const claimToken = await requestClaimToken(identity, settings.serverName, credentials.authToken ?? '');
 
-const serverToken = await exchangeClaimToken(identity, settings.configDir, claimToken, settings.serverName, '', 'direct-cloud-experiment');
+const serverToken = await exchangeClaimToken(
+  identity,
+  settings.configDir,
+  claimToken,
+  settings.serverName,
+  '',
+  'direct-cloud-experiment'
+);
 await ensurePlexCertificate(identity, settings.configDir, serverToken);
-const registration = await publishServer(identity, settings.serverName, await plexDirectUrl(settings.configDir, settings.publicUrl), serverToken, credentials.authToken);
-console.log(JSON.stringify({ claimExchangeHttpStatus: 200, serverTokenReceived: Boolean(serverToken), ...registration }, null, 2));
-
+const registration = await publishServer(
+  identity,
+  settings.serverName,
+  await plexDirectUrl(settings.configDir, settings.publicUrl),
+  serverToken,
+  credentials.authToken
+);
+console.log(
+  JSON.stringify({ claimExchangeHttpStatus: 200, serverTokenReceived: Boolean(serverToken), ...registration }, null, 2)
+);

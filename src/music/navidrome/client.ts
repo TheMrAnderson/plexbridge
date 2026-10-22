@@ -1,5 +1,13 @@
 import { createHash, randomBytes } from 'node:crypto';
-import type { MusicAlbum, MusicArtist, MusicGenre, MusicPlaylist, MusicPlaylistResult, MusicProvider, MusicSong } from '../types.js';
+import type {
+  MusicAlbum,
+  MusicArtist,
+  MusicGenre,
+  MusicPlaylist,
+  MusicPlaylistResult,
+  MusicProvider,
+  MusicSong
+} from '../types.js';
 
 export interface NavidromeSettings {
   url: string;
@@ -7,54 +15,136 @@ export interface NavidromeSettings {
   password: string;
 }
 
-type JsonObject = Record<string, any>;
+interface NavidromeItem {
+  id?: string | number;
+  name?: string;
+  value?: string;
+  title?: string;
+  artist?: string;
+  artistId?: string | number;
+  album?: string;
+  albumId?: string | number;
+  genre?: string;
+  comment?: string;
+  songCount?: string | number;
+  albumCount?: string | number;
+  coverArt?: string;
+  suffix?: string;
+  contentType?: string;
+  year?: string | number;
+  track?: string | number;
+  duration?: string | number;
+  bitRate?: string | number;
+  size?: string | number;
+}
+
+interface NavidromeResponse {
+  status?: string;
+  artists?: { index?: Array<{ artist?: NavidromeItem[] }> };
+  albumList2?: { album?: NavidromeItem[] };
+  randomSongs?: { song?: NavidromeItem[] };
+  genres?: { genre?: NavidromeItem[] };
+  playlists?: { playlist?: NavidromeItem[] };
+  playlist?: (NavidromeItem & { entry?: NavidromeItem[] }) | undefined;
+  artist?: (NavidromeItem & { album?: NavidromeItem[] }) | undefined;
+  album?: (NavidromeItem & { song?: NavidromeItem[] }) | undefined;
+  song?: NavidromeItem;
+}
+
+interface NavidromeEnvelope {
+  'subsonic-response'?: NavidromeResponse;
+}
 
 export class NavidromeClient implements MusicProvider {
-  constructor(private readonly settings: NavidromeSettings, private readonly fetchImpl: typeof fetch = fetch) {}
+  constructor(
+    private readonly settings: NavidromeSettings,
+    private readonly fetchImpl: typeof fetch = fetch
+  ) {}
 
-  private async call(method: string, params: Record<string, string | number | string[] | undefined> = {}): Promise<JsonObject> {
-    if (!this.settings.url || !this.settings.username || !this.settings.password) throw new Error('Navidrome is not configured');
+  private async call(
+    method: string,
+    params: Record<string, string | number | string[] | undefined> = {}
+  ): Promise<NavidromeResponse> {
+    if (!this.settings.url || !this.settings.username || !this.settings.password)
+      throw new Error('Navidrome is not configured');
     const salt = randomBytes(8).toString('hex');
     const token = createHash('md5').update(`${this.settings.password}${salt}`).digest('hex');
-    const query = new URLSearchParams({ u: this.settings.username, t: token, s: salt, v: '1.16.1', c: 'PlexBridge', f: 'json' });
-    for (const [key, value] of Object.entries(params)) { if (Array.isArray(value)) for (const item of value) query.append(key, item); else if (value !== undefined) query.set(key, String(value)); }
+    const query = new URLSearchParams({
+      u: this.settings.username,
+      t: token,
+      s: salt,
+      v: '1.16.1',
+      c: 'PlexBridge',
+      f: 'json'
+    });
+    for (const [key, value] of Object.entries(params)) {
+      if (Array.isArray(value)) for (const item of value) query.append(key, item);
+      else if (value !== undefined) query.set(key, String(value));
+    }
     const response = await this.fetchImpl(`${this.settings.url.replace(/\/$/, '')}/rest/${method}.view?${query}`);
     if (!response.ok) throw new Error(`Navidrome ${method} returned HTTP ${response.status}`);
-    const body = await response.json() as JsonObject;
+    const body = (await response.json()) as NavidromeEnvelope;
     const result = body['subsonic-response'];
-    if (!result || result.status !== 'ok') throw new Error(`Navidrome ${method} returned an error`);
+    if (result?.status !== 'ok') throw new Error(`Navidrome ${method} returned an error`);
     return result;
   }
 
   async artists(): Promise<MusicArtist[]> {
     const result = await this.call('getArtists');
-    return (result.artists?.index ?? []).flatMap((index: JsonObject) => index.artist ?? []).map((artist: JsonObject) => ({ id: String(artist.id), name: artist.name ?? 'Unknown Artist', coverArt: artist.coverArt }));
+    return (result.artists?.index ?? [])
+      .flatMap((index) => index.artist ?? [])
+      .map((artist) => ({
+        id: String(artist.id),
+        name: artist.name ?? 'Unknown Artist',
+        coverArt: artist.coverArt
+      }));
   }
 
   async albums(): Promise<MusicAlbum[]> {
     const result = await this.call('getAlbumList2', { type: 'alphabeticalByName', size: 500 });
-    return (result.albumList2?.album ?? []).map((album: JsonObject) => this.normalizeAlbum(album));
+    return (result.albumList2?.album ?? []).map((album) => this.normalizeAlbum(album));
   }
 
   async songs(): Promise<MusicSong[]> {
     const result = await this.call('getRandomSongs', { size: 500 });
-    return (result.randomSongs?.song ?? []).map((song: JsonObject) => this.normalizeSong(song));
+    return (result.randomSongs?.song ?? []).map((song) => this.normalizeSong(song));
   }
 
   async genres(): Promise<MusicGenre[]> {
     const result = await this.call('getGenres');
-    return (result.genres?.genre ?? []).map((genre: JsonObject) => ({ name: genre.value ?? 'Unknown Genre', songCount: genre.songCount ? Number(genre.songCount) : undefined, albumCount: genre.albumCount ? Number(genre.albumCount) : undefined }));
+    return (result.genres?.genre ?? []).map((genre) => ({
+      name: genre.value ?? 'Unknown Genre',
+      songCount: genre.songCount ? Number(genre.songCount) : undefined,
+      albumCount: genre.albumCount ? Number(genre.albumCount) : undefined
+    }));
   }
 
   async playlists(): Promise<MusicPlaylist[]> {
     const result = await this.call('getPlaylists');
-    return (result.playlists?.playlist ?? []).map((playlist: JsonObject) => ({ id: String(playlist.id), name: playlist.name ?? 'Untitled Playlist', comment: playlist.comment, songCount: Number(playlist.songCount ?? 0), duration: Number(playlist.duration ?? 0), coverArt: playlist.coverArt }));
+    return (result.playlists?.playlist ?? []).map((playlist) => ({
+      id: String(playlist.id),
+      name: playlist.name ?? 'Untitled Playlist',
+      comment: playlist.comment,
+      songCount: Number(playlist.songCount ?? 0),
+      duration: Number(playlist.duration ?? 0),
+      coverArt: playlist.coverArt
+    }));
   }
 
   async playlist(id: string): Promise<MusicPlaylistResult> {
     const result = await this.call('getPlaylist', { id });
     const playlist = result.playlist ?? {};
-    return { playlist: { id: String(playlist.id), name: playlist.name ?? 'Untitled Playlist', comment: playlist.comment, songCount: Number(playlist.songCount ?? 0), duration: Number(playlist.duration ?? 0), coverArt: playlist.coverArt }, songs: (playlist.entry ?? []).map((song: JsonObject) => this.normalizeSong(song)) };
+    return {
+      playlist: {
+        id: String(playlist.id),
+        name: playlist.name ?? 'Untitled Playlist',
+        comment: playlist.comment,
+        songCount: Number(playlist.songCount ?? 0),
+        duration: Number(playlist.duration ?? 0),
+        coverArt: playlist.coverArt
+      },
+      songs: (playlist.entry ?? []).map((song) => this.normalizeSong(song))
+    };
   }
 
   async addToPlaylist(id: string, songIds: string[]): Promise<void> {
@@ -64,13 +154,19 @@ export class NavidromeClient implements MusicProvider {
   async artist(id: string): Promise<{ artist: MusicArtist; albums: MusicAlbum[] }> {
     const result = await this.call('getArtist', { id });
     const artist = result.artist ?? {};
-    return { artist: { id: String(artist.id), name: artist.name ?? 'Unknown Artist', coverArt: artist.coverArt }, albums: (artist.album ?? []).map((album: JsonObject) => this.normalizeAlbum(album)) };
+    return {
+      artist: { id: String(artist.id), name: artist.name ?? 'Unknown Artist', coverArt: artist.coverArt },
+      albums: (artist.album ?? []).map((album) => this.normalizeAlbum(album))
+    };
   }
 
   async album(id: string): Promise<{ album: MusicAlbum; songs: MusicSong[] }> {
     const result = await this.call('getAlbum', { id });
     const album = result.album ?? {};
-    return { album: this.normalizeAlbum(album), songs: (album.song ?? []).map((song: JsonObject) => this.normalizeSong(song)) };
+    return {
+      album: this.normalizeAlbum(album),
+      songs: (album.song ?? []).map((song) => this.normalizeSong(song))
+    };
   }
 
   async song(id: string): Promise<MusicSong> {
@@ -85,7 +181,14 @@ export class NavidromeClient implements MusicProvider {
   async streamUrl(id: string, options: { format?: string; maxBitRate?: number } = {}): Promise<string> {
     const salt = randomBytes(8).toString('hex');
     const token = createHash('md5').update(`${this.settings.password}${salt}`).digest('hex');
-    const query = new URLSearchParams({ u: this.settings.username, t: token, s: salt, v: '1.16.1', c: 'PlexBridge', id });
+    const query = new URLSearchParams({
+      u: this.settings.username,
+      t: token,
+      s: salt,
+      v: '1.16.1',
+      c: 'PlexBridge',
+      id
+    });
     if (options.format) query.set('format', options.format);
     if (options.maxBitRate !== undefined) query.set('maxBitRate', String(options.maxBitRate));
     return `${this.settings.url.replace(/\/$/, '')}/rest/stream.view?${query}`;
@@ -94,10 +197,45 @@ export class NavidromeClient implements MusicProvider {
   async coverArtUrl(id: string): Promise<string> {
     const salt = randomBytes(8).toString('hex');
     const token = createHash('md5').update(`${this.settings.password}${salt}`).digest('hex');
-    const query = new URLSearchParams({ u: this.settings.username, t: token, s: salt, v: '1.16.1', c: 'PlexBridge', id, size: '1200' });
+    const query = new URLSearchParams({
+      u: this.settings.username,
+      t: token,
+      s: salt,
+      v: '1.16.1',
+      c: 'PlexBridge',
+      id,
+      size: '1200'
+    });
     return `${this.settings.url.replace(/\/$/, '')}/rest/getCoverArt.view?${query}`;
   }
 
-  private normalizeAlbum(value: JsonObject): MusicAlbum { return { id: String(value.id), name: value.name ?? 'Unknown Album', artist: value.artist, artistId: value.artistId ? String(value.artistId) : undefined, year: value.year ? Number(value.year) : undefined, coverArt: value.coverArt }; }
-  private normalizeSong(value: JsonObject): MusicSong { return { id: String(value.id), title: value.title ?? 'Unknown Track', album: value.album, albumId: value.albumId ? String(value.albumId) : undefined, artist: value.artist, artistId: value.artistId ? String(value.artistId) : undefined, genre: value.genre, track: value.track ? Number(value.track) : undefined, year: value.year ? Number(value.year) : undefined, duration: value.duration ? Number(value.duration) : undefined, coverArt: value.coverArt, suffix: value.suffix, contentType: value.contentType, bitRate: value.bitRate ? Number(value.bitRate) : undefined, size: value.size ? Number(value.size) : undefined }; }
+  private normalizeAlbum(value: NavidromeItem): MusicAlbum {
+    return {
+      id: String(value.id),
+      name: value.name ?? 'Unknown Album',
+      artist: value.artist,
+      artistId: value.artistId ? String(value.artistId) : undefined,
+      year: value.year ? Number(value.year) : undefined,
+      coverArt: value.coverArt
+    };
+  }
+  private normalizeSong(value: NavidromeItem): MusicSong {
+    return {
+      id: String(value.id),
+      title: value.title ?? 'Unknown Track',
+      album: value.album,
+      albumId: value.albumId ? String(value.albumId) : undefined,
+      artist: value.artist,
+      artistId: value.artistId ? String(value.artistId) : undefined,
+      genre: value.genre,
+      track: value.track ? Number(value.track) : undefined,
+      year: value.year ? Number(value.year) : undefined,
+      duration: value.duration ? Number(value.duration) : undefined,
+      coverArt: value.coverArt,
+      suffix: value.suffix,
+      contentType: value.contentType,
+      bitRate: value.bitRate ? Number(value.bitRate) : undefined,
+      size: value.size ? Number(value.size) : undefined
+    };
+  }
 }

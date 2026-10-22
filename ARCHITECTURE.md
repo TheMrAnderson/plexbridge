@@ -32,10 +32,20 @@ src/music/navidrome/  Navidrome/Subsonic adapter (the current provider)
 - `src/app.ts` composes dependencies, installs common hooks, exposes health and
   claim/admin endpoints, and registers the route groups. It is the application
   coordinator, not a provider implementation.
+- Browser requests to `/` receive the listening dashboard; Plex clients that
+  request the same path with protocol media types continue to receive the Plex
+  server root response. Successful scrobbles are persisted as recent play
+  records under the configured runtime directory and are shown only to an
+  authenticated Plex account on the dashboard.
 - `src/plex/library-routes.ts` owns library browsing, metadata, playback,
   transcoding, artwork, and timeline routes. It tracks the current track and
   highest reported position per Plex player, then sends one provider scrobble
-  after the position reaches half the reported duration.
+  after the position reaches half the reported duration. It also forwards
+  Plex clients' explicit `/:/scrobble` requests immediately. When duration is
+  absent, it resolves the track duration from the provider and tracks active
+  playing time, using 110% of that duration as a fallback for delayed timeline
+  updates; paused intervals do not count, while buffering intervals remain
+  active playback time.
 - `src/plex/playlist-routes.ts` owns Plex playlist discovery, playlist items,
   composite artwork, queues, and playlist updates.
 - `src/plex/admin-page.ts` owns the setup page markup so UI text does not live
@@ -50,10 +60,10 @@ Plex metadata, and returns the response expected by the client. Streams and
 artwork follow the same route but proxy the provider's media URL through
 PlexBridge so clients never need to understand the provider API.
 
-Identity, Plex credentials, certificate material, and the Plex-to-provider
-playlist ID map are runtime state under the configured config directory. They
-are not source artifacts and must not be committed or included in a release
-package.
+Identity, Plex credentials, certificate material, the Plex-to-provider playlist
+ID map, and recent play history are runtime state under the configured config
+directory. They are not source artifacts and must not be committed or included
+in a release package.
 
 ## Adding another music server
 

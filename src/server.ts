@@ -7,6 +7,7 @@ import { publishServer } from './plex/registration.js';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import net from 'node:net';
+import http from 'node:http';
 import tls from 'node:tls';
 import { version } from './version.js';
 
@@ -31,24 +32,75 @@ const listener = net.createServer((socket) => {
     secureSocket.resume();
   });
 });
-await new Promise<void>((resolve, reject) => { listener.once('error', reject); listener.listen(settings.port, settings.host, resolve); });
+await new Promise<void>((resolve, reject) => {
+  listener.once('error', reject);
+  listener.listen(settings.port, settings.host, resolve);
+});
+let webListener: http.Server | undefined;
+if (settings.webPort !== undefined && settings.webPort !== settings.port) {
+  webListener = http.createServer((request, response) => {
+    httpServer.emit('request', request, response);
+  });
+  await new Promise<void>((resolve, reject) => {
+    webListener?.once('error', reject);
+    webListener?.listen(settings.webPort, settings.host, resolve);
+  });
+}
 const identity = await loadOrCreateIdentity(settings.configDir);
-const sockets = settings.discoveryEnabled ? startDiscovery(settings.serverName, settings.port, identity.machineIdentifier) : [];
-console.info(JSON.stringify({ event: 'startup', version, host: settings.host, port: settings.port, tls: Boolean(certificate), discovery: settings.discoveryEnabled ? 'configured' : 'disabled' }));
+const sockets = settings.discoveryEnabled
+  ? startDiscovery(settings.serverName, settings.port, identity.machineIdentifier)
+  : [];
+console.info(
+  JSON.stringify({
+    event: 'startup',
+    version,
+    host: settings.host,
+    port: settings.port,
+    webPort: settings.webPort ?? settings.port,
+    tls: Boolean(certificate),
+    discovery: settings.discoveryEnabled ? 'configured' : 'disabled'
+  })
+);
 void (async () => {
   try {
-    const credentials = JSON.parse(await readFile(join(settings.configDir, 'plex-credentials.json'), 'utf8')) as { authToken?: string; serverToken?: string };
+    const credentials = JSON.parse(await readFile(join(settings.configDir, 'plex-credentials.json'), 'utf8')) as {
+      authToken?: string;
+      serverToken?: string;
+    };
     if (!credentials.serverToken || !credentials.authToken) {
-      console.info(JSON.stringify({ event: 'pubsub_startup_skipped', reason: !credentials.serverToken ? 'server_not_claimed' : 'account_not_authenticated' }));
+      console.info(
+        JSON.stringify({
+          event: 'pubsub_startup_skipped',
+          reason: !credentials.serverToken ? 'server_not_claimed' : 'account_not_authenticated'
+        })
+      );
       return;
     }
     console.info(JSON.stringify({ event: 'registration_startup_restore' }));
-    await publishServer(identity, settings.serverName, await plexDirectUrl(settings.configDir, settings.publicUrl), credentials.serverToken, credentials.authToken);
+    await publishServer(
+      identity,
+      settings.serverName,
+      await plexDirectUrl(settings.configDir, settings.publicUrl),
+      credentials.serverToken,
+      credentials.authToken
+    );
   } catch (error) {
-    console.warn(JSON.stringify({ event: 'pubsub_startup_failed', error: error instanceof Error ? error.message : 'unknown error' }));
+    console.warn(
+      JSON.stringify({
+        event: 'pubsub_startup_failed',
+        error: error instanceof Error ? error.message : 'unknown error'
+      })
+    );
   }
 })();
-const shutdown = async () => { sockets.forEach((socket) => socket.close()); listener.close(); await app.close(); process.exit(0); };
+const shutdown = async () => {
+  sockets.forEach((socket) => {
+    socket.close();
+  });
+  webListener?.close();
+  listener.close();
+  await app.close();
+  process.exit(0);
+};
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
-

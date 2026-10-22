@@ -18,19 +18,23 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
+    "format": "biome format --write src tests scripts package.json tsconfig.json",
+    "format:check": "biome format src tests scripts package.json tsconfig.json",
+    "lint": "biome lint src tests scripts",
+    "check": "npm run lint && npm run format:check",
     "start": "node --env-file-if-exists=.env dist/src/server.js",
     "plex:login": "PLEXBRIDGE_CONFIG_DIR=./config npm run build && PLEXBRIDGE_CONFIG_DIR=./config node --env-file-if-exists=.env dist/src/cli/auth.js",
     "plex:claim": "PLEXBRIDGE_CONFIG_DIR=./config npm run build && PLEXBRIDGE_CONFIG_DIR=./config node --env-file-if-exists=.env dist/src/cli/claim.js",
     "plex:register": "PLEXBRIDGE_CONFIG_DIR=./config npm run build && PLEXBRIDGE_CONFIG_DIR=./config node --env-file-if-exists=.env dist/src/cli/register.js",
-    "test": "npm run build && node --test dist/tests/api.test.js dist/tests/certificate.test.js",
+    "test": "npm run check && npm run build && node --test dist/tests/api.test.js dist/tests/certificate.test.js",
     "dev": "PLEXBRIDGE_CONFIG_DIR=./config npm run build && node scripts/dev.mjs"
   },
   "dependencies": {
     "fastify": "^5.2.1"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.6.2",
     "@types/node": "^22.10.2",
     "typescript": "^5.7.2"
   }
 }
-

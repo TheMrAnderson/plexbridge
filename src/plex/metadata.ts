@@ -25,7 +25,14 @@ export function parseMetadataKey(value: string): { kind: 'a' | 'l' | 's'; id: st
 
 export function artistItem(artist: MusicArtist): PlexItem {
   const artwork = `${metadataKey('a', artist.id)}/thumb`;
-  return { key: metadataKey('a', artist.id), ratingKey: `a-${artist.id}`, title: artist.name, type: 'artist', thumb: artwork, art: artwork };
+  return {
+    key: metadataKey('a', artist.id),
+    ratingKey: `a-${artist.id}`,
+    title: artist.name,
+    type: 'artist',
+    thumb: artwork,
+    art: artwork
+  };
 }
 
 export function albumArtwork(id: string): string {
@@ -35,9 +42,15 @@ export function albumArtwork(id: string): string {
 export function albumItem(album: MusicAlbum, parent?: MusicArtist): PlexItem {
   const thumb = albumArtwork(album.id);
   return {
-    key: metadataKey('l', album.id), ratingKey: `l-${album.id}`, title: album.name, type: 'album',
+    key: metadataKey('l', album.id),
+    ratingKey: `l-${album.id}`,
+    title: album.name,
+    type: 'album',
     parentKey: parent ? metadataKey('a', parent.id) : album.artistId ? metadataKey('a', album.artistId) : undefined,
-    parentTitle: parent?.name ?? album.artist, year: album.year, thumb, art: thumb
+    parentTitle: parent?.name ?? album.artist,
+    year: album.year,
+    thumb,
+    art: thumb
   };
 }
 
@@ -46,19 +59,43 @@ export function songItem(song: MusicSong, album?: MusicAlbum): PlexItem {
   const playable = directPlayableFormats.has(sourceFormat);
   const albumId = album?.id ?? song.albumId;
   const artistId = album?.artistId ?? song.artistId;
-  const thumb = album ? albumArtwork(album.id) : song.albumId ? albumArtwork(song.albumId) : `${metadataKey('s', song.id)}/thumb`;
+  const thumb = album
+    ? albumArtwork(album.id)
+    : song.albumId
+      ? albumArtwork(song.albumId)
+      : `${metadataKey('s', song.id)}/thumb`;
   return {
-    key: metadataKey('s', song.id), ratingKey: `s-${song.id}`, guid: `plex://track/${song.id}`, title: song.title, type: 'track',
-    parentRatingKey: albumId ? `l-${albumId}` : undefined, grandparentRatingKey: artistId ? `a-${artistId}` : undefined,
-    parentGuid: albumId ? `plex://album/${albumId}` : undefined, grandparentGuid: artistId ? `plex://artist/${artistId}` : undefined,
-    parentKey: albumId ? metadataKey('l', albumId) : undefined, parentTitle: album?.name ?? song.album,
-    grandparentKey: artistId ? metadataKey('a', artistId) : undefined, grandparentTitle: album?.artist ?? song.artist,
-    parentThumb: thumb, grandparentThumb: artistId ? `${metadataKey('a', artistId)}/thumb` : undefined,
-    grandparentArt: artistId ? `${metadataKey('a', artistId)}/art` : undefined, index: song.track, year: song.year,
-    parentYear: album?.id ? undefined : song.year, summary: '', genre: song.genre, duration: song.duration,
-    thumb, art: thumb, media: {
-      partKey: `${metadataKey('s', song.id)}/stream`, duration: song.duration, size: song.size,
-      container: playable ? sourceFormat : 'mp3', audioCodec: playable ? plexAudioCodec(sourceFormat, song.contentType) : 'mp3', bitrate: song.bitRate
+    key: metadataKey('s', song.id),
+    ratingKey: `s-${song.id}`,
+    guid: `plex://track/${song.id}`,
+    title: song.title,
+    type: 'track',
+    parentRatingKey: albumId ? `l-${albumId}` : undefined,
+    grandparentRatingKey: artistId ? `a-${artistId}` : undefined,
+    parentGuid: albumId ? `plex://album/${albumId}` : undefined,
+    grandparentGuid: artistId ? `plex://artist/${artistId}` : undefined,
+    parentKey: albumId ? metadataKey('l', albumId) : undefined,
+    parentTitle: album?.name ?? song.album,
+    grandparentKey: artistId ? metadataKey('a', artistId) : undefined,
+    grandparentTitle: album?.artist ?? song.artist,
+    parentThumb: thumb,
+    grandparentThumb: artistId ? `${metadataKey('a', artistId)}/thumb` : undefined,
+    grandparentArt: artistId ? `${metadataKey('a', artistId)}/art` : undefined,
+    index: song.track,
+    year: song.year,
+    parentYear: album?.id ? undefined : song.year,
+    summary: '',
+    genre: song.genre,
+    duration: song.duration,
+    thumb,
+    art: thumb,
+    media: {
+      partKey: `${metadataKey('s', song.id)}/stream`,
+      duration: song.duration,
+      size: song.size,
+      container: playable ? sourceFormat : 'mp3',
+      audioCodec: playable ? plexAudioCodec(sourceFormat, song.contentType) : 'mp3',
+      bitrate: song.bitRate
     }
   };
 }
