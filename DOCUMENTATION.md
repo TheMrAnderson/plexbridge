@@ -10,5 +10,6 @@
 | How do I manually verify a running bridge? | [`docs/manual-test.md`](docs/manual-test.md) |
 | How do I run code quality checks? | [`README.md`](README.md) |
 | Why did a particular reverse-engineering experiment happen? | [`docs/experiments/`](docs/experiments/) |
+| What implementation quirks and compatibility lessons should I remember? | [`IMPLEMENTATION_NOTES.md`](IMPLEMENTATION_NOTES.md) |
 
 `ARCHITECTURE.md` is authoritative for source boundaries. The protocol and manual-test documents are operational references; they do not replace the implementation or describe unsupported behavior as supported.

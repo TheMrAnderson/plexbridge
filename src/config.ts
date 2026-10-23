@@ -9,6 +9,7 @@ function booleanValue(name: string, value: string | undefined, fallback: boolean
 export interface Settings {
   host: string;
   port: number;
+  publicPort: number;
   webPort?: number;
   serverName: string;
   publicUrl: string;
@@ -19,12 +20,17 @@ export interface Settings {
   navidromeUrl: string;
   navidromeUsername: string;
   navidromePassword: string;
+  webUsername?: string;
+  webPassword?: string;
 }
 
 export function loadSettings(env = process.env): Settings {
   const port = Number(env.PLEXBRIDGE_PORT ?? 32400);
   if (!Number.isInteger(port) || port < 1 || port > 65535)
     throw new Error('PLEXBRIDGE_PORT must be between 1 and 65535');
+  const publicPort = Number(env.PLEXBRIDGE_PUBLIC_PORT ?? 32400);
+  if (!Number.isInteger(publicPort) || publicPort < 1 || publicPort > 65535)
+    throw new Error('PLEXBRIDGE_PUBLIC_PORT must be between 1 and 65535');
   const webPort = env.PLEXBRIDGE_WEB_PORT ? Number(env.PLEXBRIDGE_WEB_PORT) : undefined;
   if (webPort !== undefined && (!Number.isInteger(webPort) || webPort < 1 || webPort > 65535))
     throw new Error('PLEXBRIDGE_WEB_PORT must be between 1 and 65535');
@@ -34,6 +40,7 @@ export function loadSettings(env = process.env): Settings {
   return {
     host: env.PLEXBRIDGE_HOST ?? '0.0.0.0',
     port,
+    publicPort,
     webPort,
     serverName: env.PLEXBRIDGE_SERVER_NAME ?? 'PlexBridge',
     publicUrl: env.PLEXBRIDGE_PUBLIC_URL ?? '',
@@ -47,6 +54,8 @@ export function loadSettings(env = process.env): Settings {
     configDir: env.PLEXBRIDGE_CONFIG_DIR ?? './config',
     navidromeUrl: env.NAVIDROME_URL ?? '',
     navidromeUsername: env.NAVIDROME_USERNAME ?? '',
-    navidromePassword: env.NAVIDROME_PASSWORD ?? ''
+    navidromePassword: env.NAVIDROME_PASSWORD ?? '',
+    webUsername: env.PLEXBRIDGE_WEB_USERNAME,
+    webPassword: env.PLEXBRIDGE_WEB_PASSWORD
   };
 }

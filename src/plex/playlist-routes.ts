@@ -2,11 +2,25 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { ReadableStream } from 'node:stream/web';
 import { Readable } from 'node:stream';
 import type { MusicProvider } from '../music/types.js';
-import { libraryItemsJson, playlistsJson } from './protocol.js';
+import { libraryItemsJson, playlistsJson, type PlexItem } from './protocol.js';
 import { songItem } from './metadata.js';
+
+const MAX_LIBRARY_PAGE_SIZE = 500;
+
+function playlistPage<T>(items: T[], query: Record<string, string | undefined>) {
+  const parsedOffset = Number(query.offset ?? 0);
+  const parsedSize = Number(query.size ?? MAX_LIBRARY_PAGE_SIZE);
+  const offset = Number.isInteger(parsedOffset) && parsedOffset > 0 ? parsedOffset : 0;
+  const size =
+    Number.isInteger(parsedSize) && parsedSize > 0
+      ? Math.min(parsedSize, MAX_LIBRARY_PAGE_SIZE)
+      : MAX_LIBRARY_PAGE_SIZE;
+  return { items: items.slice(offset, offset + size), totalSize: items.length, offset };
+}
 
 export interface PlaylistRouteDependencies {
   music: MusicProvider;
+  playQueues: Map<string, { item: PlexItem; sourceUri: string; response?: string }>;
   playlistIds: Map<string, string>;
   loadPlaylistIds: () => Promise<void>;
   savePlaylistIds: () => Promise<void>;
@@ -24,7 +38,7 @@ interface RouteApp {
 
 export function registerPlaylistRoutes(
   app: RouteApp,
-  { music, playlistIds, loadPlaylistIds, savePlaylistIds }: PlaylistRouteDependencies
+  { music, playQueues, playlistIds, loadPlaylistIds, savePlaylistIds }: PlaylistRouteDependencies
 ): void {
   const playlistsResponse = async (request: RouteRequest, reply: RouteReply) => {
     if (!request.headers.accept?.includes('application/json')) return reply.code(406).send('JSON required\n');
@@ -43,9 +57,10 @@ export function registerPlaylistRoutes(
         playlistIds.set(ratingKey, playlist.id);
         return { ...playlist, ratingKey };
       });
+      const page = playlistPage(plexPlaylists, request.query);
       await savePlaylistIds();
       console.debug(JSON.stringify({ event: 'playlist_response', count: plexPlaylists.length }));
-      return reply.type('application/json').send(playlistsJson(plexPlaylists));
+      return reply.type('application/json').send(playlistsJson(page.items, page.totalSize, page.offset));
     } catch (error) {
       console.warn(
         JSON.stringify({
@@ -164,10 +179,25 @@ export function registerPlaylistRoutes(
     try {
       await loadPlaylistIds();
       const requestedId = decodeURIComponent(request.params.id);
-      const uri = String((request.query as { uri?: string }).uri ?? '');
-      const ids = [...uri.matchAll(/(?:^|\/)library\/metadata\/s-([^/?#]+)/g)].map((match) =>
+      const query = request.query as { uri?: string; playQueueID?: string };
+      let uri = String(query.uri ?? '');
+      let ids = [...uri.matchAll(/(?:^|\/)library\/metadata\/s-([^/?#]+)/g)].map((match) =>
         decodeURIComponent(match[1])
       );
+      if (!ids.length && query.playQueueID) {
+        const queue = playQueues.get(query.playQueueID);
+        if (queue?.response) {
+          const response = JSON.parse(queue.response) as {
+            MediaContainer?: { Metadata?: Array<{ ratingKey?: string; key?: string }> };
+          };
+          const metadata = response.MediaContainer?.Metadata ?? [];
+          ids = metadata
+            .map((item) => item.ratingKey ?? item.key?.match(/\/library\/metadata\/(s-[^/?#]+)/)?.[1] ?? '')
+            .filter((value) => value.startsWith('s-'))
+            .map((value) => decodeURIComponent(value.slice(2)));
+          uri = `playQueue:${query.playQueueID}`;
+        }
+      }
       if (!ids.length) return reply.code(400).send('A track URI is required\n');
       const musicId = playlistIds.get(requestedId) ?? requestedId;
       const before = await music.playlist(musicId);

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -9,7 +9,7 @@ import { libraryItemsJson, playQueueJson } from '../src/plex/protocol.js';
 import type { MusicProvider } from '../src/music/types.js';
 
 async function withApp<T>(
-  fn: (app: ReturnType<typeof createApp>) => Promise<T>,
+  fn: (app: ReturnType<typeof createApp>, configDir: string) => Promise<T>,
   musicProvider?: MusicProvider,
   now?: () => number,
   timers?: {
@@ -20,7 +20,12 @@ async function withApp<T>(
   const dir = await mkdtemp(join(tmpdir(), 'plexbridge-'));
   const app = createApp(
     {
-      ...loadSettings({ PLEXBRIDGE_CONFIG_DIR: dir, PLEXBRIDGE_DISCOVERY_ENABLED: 'false' }),
+      ...loadSettings({
+        PLEXBRIDGE_CONFIG_DIR: dir,
+        PLEXBRIDGE_DISCOVERY_ENABLED: 'false',
+        PLEXBRIDGE_WEB_USERNAME: 'test',
+        PLEXBRIDGE_WEB_PASSWORD: 'test-password'
+      }),
       configDir: dir,
       discoveryEnabled: false
     },
@@ -31,15 +36,28 @@ async function withApp<T>(
   );
   try {
     await app.ready();
-    return await fn(app);
+    return await fn(app, dir);
   } finally {
     await app.close();
     await rm(dir, { recursive: true, force: true });
   }
 }
 
+async function webCookie(app: ReturnType<typeof createApp>): Promise<string> {
+  const response = await app.inject({
+    method: 'POST',
+    url: '/web/login',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    payload: 'username=test&password=test-password&returnTo=/'
+  });
+  assert.equal(response.statusCode, 302);
+  const cookie = response.headers['set-cookie'];
+  assert.ok(cookie);
+  return Array.isArray(cookie) ? cookie[0] : cookie;
+}
+
 test('identity persists and is consistent across endpoints', async () =>
-  withApp(async (app) => {
+  withApp(async (app, configDir) => {
     const first = await app.inject('/identity');
     const second = await app.inject('/');
     assert.match(first.headers['content-type'] ?? '', /^application\/xml/);
@@ -48,24 +66,66 @@ test('identity persists and is consistent across endpoints', async () =>
     assert.match(first.body, /apiVersion="1\.2\.3"/);
     assert.match(first.body, /version="1\.43\.5\.11029-6bf8af3f0"/);
     assert.ok(id);
+    const stored = JSON.parse(await readFile(join(configDir, 'identity.json'), 'utf8')) as {
+      libraryUuid?: string;
+    };
+    assert.match(stored.libraryUuid ?? '', /^[0-9a-f-]{36}$/);
+    assert.match((await app.inject('/library/sections')).body, new RegExp(`uuid="${stored.libraryUuid}"`));
   }));
 
 test('browser requests to the root serve the listening dashboard', async () =>
   withApp(async (app) => {
-    const response = await app.inject({ method: 'GET', url: '/', headers: { accept: 'text/html' } });
+    const response = await app.inject({
+      method: 'GET',
+      url: '/',
+      headers: { accept: 'text/html', cookie: await webCookie(app) }
+    });
     assert.equal(response.statusCode, 200);
     assert.match(response.headers['content-type'] ?? '', /^text\/html/);
     assert.match(response.body, /Recent plays/);
   }));
 
+test('web routes require local authentication while Plex routes remain public', async () =>
+  withApp(async (app) => {
+    assert.equal((await app.inject({ method: 'GET', url: '/', headers: { accept: 'text/html' } })).statusCode, 302);
+    assert.equal((await app.inject('/home/status')).statusCode, 401);
+    assert.equal((await app.inject('/admin/status')).statusCode, 401);
+    assert.equal((await app.inject('/library/sections')).statusCode, 200);
+  }));
+
 test('admin page serves its separate assets', async () =>
   withApp(async (app) => {
-    const page = await app.inject('/admin');
+    const page = await app.inject({ method: 'GET', url: '/admin', headers: { cookie: await webCookie(app) } });
     assert.equal(page.statusCode, 200);
     assert.match(page.body, /href="\/admin\.css"/);
     assert.match(page.body, /src="\/admin\.js"/);
     assert.equal((await app.inject('/admin.css')).statusCode, 200);
     assert.equal((await app.inject('/admin.js')).statusCode, 200);
+  }));
+
+test('admin settings and manual sync require web authentication', async () =>
+  withApp(async (app) => {
+    assert.equal((await app.inject('/admin/settings')).statusCode, 401);
+    const cookie = await webCookie(app);
+    const settings = await app.inject({ method: 'GET', url: '/admin/settings', headers: { cookie } });
+    assert.equal(settings.statusCode, 200);
+    assert.equal(JSON.parse(settings.body).navidromeConfigured, false);
+    const saved = await app.inject({
+      method: 'PUT',
+      url: '/admin/settings',
+      headers: { cookie, 'content-type': 'application/json' },
+      payload: JSON.stringify({
+        navidromeUrl: 'http://navidrome:4533',
+        navidromeUsername: 'plexbridge',
+        navidromePassword: 'secret',
+        syncEnabled: true,
+        syncTime: '04:30'
+      })
+    });
+    assert.equal(saved.statusCode, 200);
+    const stored = JSON.parse(saved.body);
+    assert.equal(stored.navidromeConfigured, true);
+    assert.equal(stored.syncTime, '04:30');
   }));
 
 test('library is a single empty music section', async () =>
@@ -76,9 +136,189 @@ test('library is a single empty music section', async () =>
     assert.match(response.body, /type="artist"/);
   }));
 
+test('library listings expose full totals and return Plexamp-sized pages', async () => {
+  const musicProvider = new Proxy({} as MusicProvider, {
+    get: (_target, property) => {
+      if (property === 'artists')
+        return async () =>
+          Array.from({ length: 501 }, (_, index) => ({ id: `artist-${index}`, name: `Artist ${index}` }));
+      if (property === 'albums')
+        return async () =>
+          Array.from({ length: 501 }, (_, index) => ({ id: `album-${index}`, name: `Album ${index}` }));
+      if (property === 'songs')
+        return async () => Array.from({ length: 501 }, (_, index) => ({ id: `song-${index}`, title: `Song ${index}` }));
+      if (property === 'playlists')
+        return async () =>
+          Array.from({ length: 501 }, (_, index) => ({
+            id: `playlist-${index}`,
+            name: `Playlist ${index}`,
+            songCount: 0,
+            duration: 0
+          }));
+      return async () => [];
+    }
+  }) as MusicProvider;
+
+  await withApp(async (app) => {
+    for (const url of [
+      '/library/sections/1/all?type=8&offset=500&size=50',
+      '/library/sections/1/all?type=9&offset=500&size=50',
+      '/library/sections/1/all?type=10&offset=500&size=50',
+      '/playlists?offset=500&size=50'
+    ]) {
+      const response = await app.inject({ method: 'GET', url, headers: { accept: 'application/json' } });
+      assert.equal(response.statusCode, 200, url);
+      const container = JSON.parse(response.body).MediaContainer;
+      assert.equal(container.size, 1, url);
+      assert.equal(container.totalSize, 501, url);
+      assert.equal(container.offset, 500, url);
+    }
+
+    const albumCharacters = await app.inject({
+      method: 'GET',
+      url: '/library/sections/1/firstCharacter?type=9',
+      headers: { accept: 'application/json' }
+    });
+    assert.equal(JSON.parse(albumCharacters.body).MediaContainer.Directory[0].size, 501);
+
+    const albumLetter = await app.inject({
+      method: 'GET',
+      url: '/library/sections/1/firstCharacter/A?type=9',
+      headers: { accept: 'application/json' }
+    });
+    const albumLetterContainer = JSON.parse(albumLetter.body).MediaContainer;
+    assert.equal(albumLetterContainer.totalSize, 501);
+    assert.equal(albumLetterContainer.Metadata[0].type, 'album');
+  }, musicProvider);
+});
+
+test('Best Of queries use Navidrome play counts and year filters', async () => {
+  const musicProvider = new Proxy({} as MusicProvider, {
+    get: (_target, property) => {
+      if (property === 'artists')
+        return async () => [
+          { id: 'artist-1', name: 'Artist One' },
+          { id: 'artist-2', name: 'Artist Two' }
+        ];
+      if (property === 'albums')
+        return async () => [
+          { id: 'album-old', name: 'Old', year: 2025, playCount: 99, lastPlayedAt: 1790000000 },
+          { id: 'album-low', name: 'Low', year: 2026, playCount: 2, lastPlayedAt: 1791000000 },
+          { id: 'album-high', name: 'High', year: 2026, playCount: 8, lastPlayedAt: 1792000000 }
+        ];
+      if (property === 'songs')
+        return async () => [
+          { id: 'song-1', title: 'Song One', artist: 'Artist One', artistId: 'artist-1', year: 2026, playCount: 4 },
+          { id: 'song-2', title: 'Song Two', artist: 'Artist Two', artistId: 'artist-2', year: 2026, playCount: 1 }
+        ];
+      return async () => [];
+    }
+  }) as MusicProvider;
+
+  await withApp(async (app) => {
+    const albums = await app.inject({
+      url: '/library/sections/1/all?type=9&year=2026&viewCount%3E=1&sort=viewCount:desc&limit=1',
+      headers: { accept: 'application/json' }
+    });
+    const albumContainer = JSON.parse(albums.body).MediaContainer;
+    assert.equal(albumContainer.totalSize, 2);
+    assert.equal(albumContainer.size, 1);
+    assert.equal(albumContainer.Metadata[0].title, 'High');
+    assert.equal(albumContainer.Metadata[0].viewCount, 8);
+    assert.equal(albumContainer.Metadata[0].lastViewedAt, 1792000000);
+
+    const artists = await app.inject({
+      url: '/library/sections/1/all?type=8&viewCount%3E=1&sort=viewCount:desc',
+      headers: { accept: 'application/json' }
+    });
+    const artistContainer = JSON.parse(artists.body).MediaContainer;
+    assert.equal(artistContainer.Metadata[0].title, 'Artist One');
+    assert.equal(artistContainer.Metadata[0].viewCount, 4);
+  }, musicProvider);
+});
+
+test('artist and album genre routes support XML, counts, and filtering', async () => {
+  const musicProvider = new Proxy({} as MusicProvider, {
+    get: (_target, property) => {
+      if (property === 'artists') return async () => [{ id: 'artist-1', name: 'Artist One' }];
+      if (property === 'albums')
+        return async () => [{ id: 'album-1', name: 'Album One', artistId: 'artist-1', recordLabel: 'Test Label' }];
+      if (property === 'songs')
+        return async () => [
+          {
+            id: 'song-1',
+            title: 'Song One',
+            artist: 'Artist One',
+            artistId: 'artist-1',
+            albumId: 'album-1',
+            genre: 'Hip-Hop',
+            mood: 'Energetic'
+          }
+        ];
+      if (property === 'genres') return async () => [{ name: 'Hip-Hop' }];
+      return async () => [];
+    }
+  }) as MusicProvider;
+
+  await withApp(async (app) => {
+    const xml = await app.inject({
+      url: '/library/sections/1/genre?type=8',
+      headers: { accept: 'application/xml' }
+    });
+    assert.equal(xml.statusCode, 200);
+    assert.match(xml.body, /title="Hip-Hop"/);
+    const json = await app.inject({
+      url: '/library/sections/1/genre?type=8',
+      headers: { accept: 'application/json' }
+    });
+    assert.equal(json.statusCode, 200);
+    const genreDirectory = JSON.parse(json.body).MediaContainer.Directory[0];
+    assert.match(genreDirectory.key, /^\d+$/);
+    assert.equal(genreDirectory.fastKey, `/library/sections/1/all?type=8&genre=${genreDirectory.key}`);
+    const albums = await app.inject({
+      url: '/library/sections/1/genre?type=9',
+      headers: { accept: 'application/json' }
+    });
+    assert.equal(JSON.parse(albums.body).MediaContainer.Directory[0].albumCount, 1);
+    const filtered = await app.inject({
+      url: '/library/sections/1/all?type=8&genre=Hip-Hop',
+      headers: { accept: 'application/json' }
+    });
+    assert.equal(JSON.parse(filtered.body).MediaContainer.totalSize, 1);
+    const moods = await app.inject({
+      url: '/library/sections/1/mood?type=9',
+      headers: { accept: 'application/json' }
+    });
+    assert.equal(moods.statusCode, 200);
+    const moodDirectory = JSON.parse(moods.body).MediaContainer.Directory[0];
+    assert.equal(moodDirectory.title, 'Energetic');
+    assert.equal(moodDirectory.type, 'mood');
+    assert.match(moodDirectory.fastKey, /type=9&mood=\d+$/);
+    const moodAlbums = await app.inject({
+      url: `/library/sections/1/all?type=9&mood=${moodDirectory.key}`,
+      headers: { accept: 'application/json' }
+    });
+    assert.equal(JSON.parse(moodAlbums.body).MediaContainer.totalSize, 1);
+    const studios = await app.inject({
+      url: '/library/sections/1/studio?type=9',
+      headers: { accept: 'application/json' }
+    });
+    assert.equal(studios.statusCode, 200);
+    const studioDirectory = JSON.parse(studios.body).MediaContainer.Directory[0];
+    assert.equal(studioDirectory.title, 'Test Label');
+    assert.equal(studioDirectory.type, 'studio');
+    assert.match(studioDirectory.fastKey, /type=9&studio=\d+$/);
+    const studioAlbums = await app.inject({
+      url: `/library/sections/1/all?type=9&studio=${studioDirectory.key}`,
+      headers: { accept: 'application/json' }
+    });
+    assert.equal(JSON.parse(studioAlbums.body).MediaContainer.totalSize, 1);
+  }, musicProvider);
+});
+
 test('optional library filters return empty PMS-compatible responses', async () =>
   withApp(async (app) => {
-    for (const filter of ['style', 'mood', 'studio', 'folder']) {
+    for (const filter of ['style', 'folder']) {
       const response = await app.inject({
         method: 'GET',
         url: `/library/sections/1/${filter}`,
@@ -118,6 +358,185 @@ test('playlist discovery is available at the advertised Plex routes', async () =
     assert.equal(libraryPlaylistRoute.statusCode, 200);
     assert.equal(JSON.parse(libraryPlaylistRoute.body).MediaContainer.size, 0);
   }));
+
+test('artist mix queues include tracks credited to each selected artist', async () => {
+  const musicProvider = new Proxy({} as MusicProvider, {
+    get: (_target, property) => {
+      if (property === 'artists')
+        return async () => [
+          { id: 'artist-1', name: 'Kenny Chesney' },
+          { id: 'artist-2', name: 'Tim McGraw' }
+        ];
+      if (property === 'songs')
+        return async () => [
+          { id: 'song-1', title: 'Kenny song', artist: 'Kenny Chesney', artistId: 'artist-1', albumId: 'album-1' },
+          { id: 'song-2', title: 'Shared song', artist: 'Kenny Chesney, Tim McGraw', artistId: 'artist-1' },
+          { id: 'song-3', title: 'Tim song', artist: 'Tim McGraw', artistId: 'artist-2' },
+          { id: 'song-4', title: 'Other song', artist: 'Other Artist', artistId: 'artist-3' }
+        ];
+      if (property === 'albums')
+        return async () => [
+          { id: 'album-1', name: 'Boats', artist: 'Other Artist' },
+          { id: 'album-2', name: 'Sailor', artist: 'Other Artist' }
+        ];
+      if (property === 'album')
+        return async (id: string) => ({
+          album: { id, name: id === 'album-1' ? 'Boats' : 'Sailor', artist: 'Other Artist' },
+          songs: [{ id: `song-${id}`, title: `${id} song`, artist: 'Other Artist', albumId: id }]
+        });
+      if (property === 'artist')
+        return async (id: string) => ({
+          artist: { id, name: id === 'artist-1' ? 'Kenny Chesney' : 'Tim McGraw' },
+          albums: []
+        });
+      return async () => [];
+    }
+  }) as MusicProvider;
+
+  await withApp(async (app) => {
+    const search = await app.inject({
+      method: 'GET',
+      url: '/hubs/search?query=chesney',
+      headers: { accept: 'application/json' }
+    });
+    assert.equal(search.statusCode, 200);
+    const searchHub = JSON.parse(search.body).MediaContainer.Hub[0];
+    assert.equal(searchHub.hubIdentifier, 'search.artists');
+    assert.equal(searchHub.key, '/hubs/search?query=chesney&type=8');
+    assert.equal(searchHub.Metadata[0].title, 'Kenny Chesney');
+    assert.equal(searchHub.Metadata[0].guid, 'plex://artist/artist-1');
+    assert.equal(searchHub.Metadata[0].Image[0].type, 'coverPoster');
+    const sonicSearch = await app.inject({
+      method: 'GET',
+      url: '/hubs/search?query=shared&includeCollections=1&contentDirectoryID=1',
+      headers: { accept: 'application/json' }
+    });
+    const sonicHub = JSON.parse(sonicSearch.body).MediaContainer.Hub[0];
+    assert.equal(sonicHub.type, 'track');
+    assert.equal(sonicHub.hubIdentifier, 'search.tracks');
+    assert.equal(sonicHub.Metadata[0].title, 'Shared song');
+    assert.equal(sonicHub.Metadata[0].Media[0].Part[0].key, '/library/metadata/s-song-2/stream');
+    const typedTrackSearch = await app.inject({
+      method: 'GET',
+      url: '/hubs/search?query=shared&type=10',
+      headers: { accept: 'application/json' }
+    });
+    assert.equal(JSON.parse(typedTrackSearch.body).MediaContainer.Hub[0].type, 'track');
+    const artistFocusedSearch = await app.inject({
+      method: 'GET',
+      url: '/hubs/search?query=kenny',
+      headers: { accept: 'application/json' }
+    });
+    assert.equal(JSON.parse(artistFocusedSearch.body).MediaContainer.Hub.length, 1);
+    assert.equal(JSON.parse(artistFocusedSearch.body).MediaContainer.Hub[0].type, 'artist');
+    const noArtistSearch = await app.inject({
+      method: 'GET',
+      url: '/hubs/search?query=not-an-artist',
+      headers: { accept: 'application/json' }
+    });
+    assert.equal(JSON.parse(noArtistSearch.body).MediaContainer.Hub.length, 0);
+    const albumSearch = await app.inject({
+      method: 'GET',
+      url: '/hubs/search?query=boats',
+      headers: { accept: 'application/json' }
+    });
+    assert.equal(JSON.parse(albumSearch.body).MediaContainer.Hub[0].type, 'album');
+    const albumQueue = await app.inject({
+      method: 'POST',
+      url: `/playQueues?uri=${encodeURIComponent('library://abc/directory//library/sections/1/all?album.id=l-album-1,l-album-2')}&shuffle=1`,
+      headers: { accept: 'application/json' }
+    });
+    assert.equal(albumQueue.statusCode, 200);
+    assert.equal(JSON.parse(albumQueue.body).MediaContainer.playQueueTotalCount, 2);
+    const albumSimilar = await app.inject({
+      method: 'GET',
+      url: '/library/metadata/l-album-1/similar',
+      headers: { accept: 'application/json' }
+    });
+    assert.equal(albumSimilar.statusCode, 200);
+    assert.equal(JSON.parse(albumSimilar.body).MediaContainer.size, 0);
+
+    const innerUri = '/library/sections/1/all?artist.id=a-artist-1,a-artist-2';
+    const uri = `server://abc/com.plexapp.plugins.library${innerUri}`;
+    const response = await app.inject({
+      method: 'POST',
+      url: `/playQueues?uri=${encodeURIComponent(uri)}&shuffle=1`,
+      headers: { accept: 'application/json' }
+    });
+    assert.equal(response.statusCode, 200);
+    const container = JSON.parse(response.body).MediaContainer;
+    assert.equal(container.size, 3);
+    assert.equal(container.playQueueTotalCount, 3);
+    assert.deepEqual(container.Metadata.map((item: { ratingKey: string }) => item.ratingKey).sort(), [
+      's-song-1',
+      's-song-2',
+      's-song-3'
+    ]);
+    const metadata = await app.inject({
+      method: 'GET',
+      url: '/library/metadata/a-artist-1,a-artist-2',
+      headers: { accept: 'application/json' }
+    });
+    assert.equal(metadata.statusCode, 200);
+    assert.equal(JSON.parse(metadata.body).MediaContainer.size, 2);
+    const cleared = await app.inject({
+      method: 'DELETE',
+      url: '/playQueues/1/items',
+      headers: { accept: 'application/json' }
+    });
+    assert.equal(cleared.statusCode, 200);
+    assert.equal(JSON.parse(cleared.body).MediaContainer.playQueueTotalCount, 0);
+    const queue = await app.inject({ method: 'GET', url: '/playQueues/1', headers: { accept: 'application/json' } });
+    assert.equal(queue.statusCode, 200);
+    assert.equal(JSON.parse(queue.body).MediaContainer.size, 0);
+    const staleClear = await app.inject({
+      method: 'DELETE',
+      url: '/playQueues/999/items',
+      headers: { accept: 'application/json' }
+    });
+    assert.equal(staleClear.statusCode, 200);
+    assert.equal(JSON.parse(staleClear.body).MediaContainer.playQueueTotalCount, 0);
+    const staleQueue = await app.inject({
+      method: 'GET',
+      url: '/playQueues/999',
+      headers: { accept: 'application/json' }
+    });
+    assert.equal(staleQueue.statusCode, 200);
+    assert.equal(JSON.parse(staleQueue.body).MediaContainer.size, 0);
+  }, musicProvider);
+});
+
+test('Sonic Adventure falls back to the requested track queue without sonic analysis', async () => {
+  const songs = new Map([
+    ['song-start', { id: 'song-start', title: 'Start', artist: 'Artist', artistId: 'artist-1' }],
+    ['song-end', { id: 'song-end', title: 'End', artist: 'Artist', artistId: 'artist-1' }]
+  ]);
+  const musicProvider = new Proxy({} as MusicProvider, {
+    get: (_target, property) => {
+      if (property === 'song') return async (id: string) => songs.get(id);
+      if (property === 'artists') return async () => [{ id: 'artist-1', name: 'Artist' }];
+      if (property === 'songs') return async () => [...songs.values()];
+      return async () => [];
+    }
+  }) as MusicProvider;
+
+  await withApp(async (app) => {
+    const path = await app.inject({
+      url: '/library/sections/1/computePath?startID=s-song-start&endID=s-song-end',
+      headers: { accept: 'application/json' }
+    });
+    assert.equal(path.statusCode, 200);
+    assert.equal(JSON.parse(path.body).MediaContainer.size, 0);
+
+    const queue = await app.inject({
+      method: 'POST',
+      url: `/playQueues?playlistID=${encodeURIComponent('s-song-start,s-song-end')}&shuffle=0`,
+      headers: { accept: 'application/json' }
+    });
+    assert.equal(queue.statusCode, 200);
+    assert.equal(JSON.parse(queue.body).MediaContainer.playQueueTotalCount, 2);
+  }, musicProvider);
+});
 
 test('playback control endpoints return PMS-compatible success responses', async () =>
   withApp(async (app) => {
@@ -167,7 +586,7 @@ test('explicit Plex scrobbles are forwarded to the music provider', async () => 
   await withApp(async (app) => {
     const response = await app.inject({
       method: 'POST',
-      url: '/:/scrobble?ratingKey=s-track-42&time=90000',
+      url: '/:/scrobble?ratingKey=s-track-42&time=90000&duration=120000',
       headers: { accept: 'application/json' }
     });
     assert.equal(response.statusCode, 200);
@@ -188,7 +607,7 @@ test('Plex rate requests are treated as explicit scrobbles', async () => {
   await withApp(async (app) => {
     const response = await app.inject({
       method: 'PUT',
-      url: '/:/rate?ratingKey=s-track-49&rating=10',
+      url: '/:/rate?ratingKey=s-track-49&rating=10&time=90000&duration=120000',
       headers: { accept: 'application/json' }
     });
     assert.equal(response.statusCode, 200);
@@ -237,7 +656,7 @@ test('scrobbles accept Plex metadata keys as well as rating keys', async () => {
       headers
     });
   }, musicProvider);
-  assert.deepEqual(scrobbled, ['track-43', 'track-44']);
+  assert.deepEqual(scrobbled, ['track-44']);
 });
 
 test('scrobbles accept bare Plex rating keys and metadata paths', async () => {
@@ -259,7 +678,7 @@ test('scrobbles accept bare Plex rating keys and metadata paths', async () => {
       headers
     });
   }, musicProvider);
-  assert.deepEqual(scrobbled, ['track-45', 'track-46']);
+  assert.deepEqual(scrobbled, ['track-46']);
 });
 
 test('timeline retains a player track duration when a later update omits it', async () => {

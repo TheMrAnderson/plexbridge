@@ -2,6 +2,8 @@ export interface MusicArtist {
   id: string;
   name: string;
   coverArt?: string;
+  playCount?: number;
+  lastPlayedAt?: number;
 }
 export interface MusicAlbum {
   id: string;
@@ -9,7 +11,10 @@ export interface MusicAlbum {
   artist?: string;
   artistId?: string;
   year?: number;
+  recordLabel?: string;
   coverArt?: string;
+  playCount?: number;
+  lastPlayedAt?: number;
 }
 export interface MusicSong {
   id: string;
@@ -19,6 +24,7 @@ export interface MusicSong {
   artist?: string;
   artistId?: string;
   genre?: string;
+  mood?: string;
   track?: number;
   year?: number;
   duration?: number;
@@ -27,6 +33,8 @@ export interface MusicSong {
   contentType?: string;
   bitRate?: number;
   size?: number;
+  playCount?: number;
+  lastPlayedAt?: number;
 }
 export interface MusicGenre {
   name: string;
@@ -47,6 +55,8 @@ export interface MusicPlaylistResult {
 }
 
 export interface MusicProvider {
+  refreshLibrary?(): Promise<{ artists: number; albums: number; songs: number; playlists: number }>;
+  updateSettings?(settings: { url: string; username: string; password: string }): void;
   artists(): Promise<MusicArtist[]>;
   albums(): Promise<MusicAlbum[]>;
   songs(): Promise<MusicSong[]>;
@@ -55,6 +65,8 @@ export interface MusicProvider {
   playlist(id: string): Promise<MusicPlaylistResult>;
   addToPlaylist(id: string, songIds: string[]): Promise<void>;
   artist(id: string): Promise<{ artist: MusicArtist; albums: MusicAlbum[] }>;
+  relatedArtists?(id: string): Promise<MusicArtist[]>;
+  findSonicPath?(startId: string, endId: string): Promise<MusicSong[]>;
   album(id: string): Promise<{ album: MusicAlbum; songs: MusicSong[] }>;
   song(id: string): Promise<MusicSong>;
   scrobble(id: string): Promise<void>;

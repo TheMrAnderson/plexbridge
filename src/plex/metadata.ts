@@ -28,8 +28,11 @@ export function artistItem(artist: MusicArtist): PlexItem {
   return {
     key: metadataKey('a', artist.id),
     ratingKey: `a-${artist.id}`,
+    guid: `plex://artist/${artist.id}`,
     title: artist.name,
     type: 'artist',
+    viewCount: artist.playCount,
+    lastViewedAt: artist.lastPlayedAt,
     thumb: artwork,
     art: artwork
   };
@@ -44,11 +47,14 @@ export function albumItem(album: MusicAlbum, parent?: MusicArtist): PlexItem {
   return {
     key: metadataKey('l', album.id),
     ratingKey: `l-${album.id}`,
+    guid: `plex://album/${album.id}`,
     title: album.name,
     type: 'album',
     parentKey: parent ? metadataKey('a', parent.id) : album.artistId ? metadataKey('a', album.artistId) : undefined,
     parentTitle: parent?.name ?? album.artist,
     year: album.year,
+    viewCount: album.playCount,
+    lastViewedAt: album.lastPlayedAt,
     thumb,
     art: thumb
   };
@@ -83,6 +89,8 @@ export function songItem(song: MusicSong, album?: MusicAlbum): PlexItem {
     grandparentArt: artistId ? `${metadataKey('a', artistId)}/art` : undefined,
     index: song.track,
     year: song.year,
+    viewCount: song.playCount,
+    lastViewedAt: song.lastPlayedAt,
     parentYear: album?.id ? undefined : song.year,
     summary: '',
     genre: song.genre,

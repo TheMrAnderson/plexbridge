@@ -25,6 +25,7 @@ interface NavidromeItem {
   album?: string;
   albumId?: string | number;
   genre?: string;
+  mood?: string;
   comment?: string;
   songCount?: string | number;
   albumCount?: string | number;
@@ -32,10 +33,16 @@ interface NavidromeItem {
   suffix?: string;
   contentType?: string;
   year?: string | number;
+  recordLabel?: string;
+  recordLabels?: Array<string | { name?: string }>;
+  openSubsonicAlbumId3?: { recordLabels?: Array<string | { name?: string }> };
+  openSubsonicAlbumID3?: { recordLabels?: Array<string | { name?: string }> };
   track?: string | number;
   duration?: string | number;
   bitRate?: string | number;
   size?: string | number;
+  playCount?: string | number;
+  played?: string | number;
 }
 
 interface NavidromeResponse {
@@ -43,12 +50,16 @@ interface NavidromeResponse {
   artists?: { index?: Array<{ artist?: NavidromeItem[] }> };
   albumList2?: { album?: NavidromeItem[] };
   randomSongs?: { song?: NavidromeItem[] };
+  searchResult3?: { song?: NavidromeItem[] };
   genres?: { genre?: NavidromeItem[] };
   playlists?: { playlist?: NavidromeItem[] };
   playlist?: (NavidromeItem & { entry?: NavidromeItem[] }) | undefined;
   artist?: (NavidromeItem & { album?: NavidromeItem[] }) | undefined;
+  artistInfo?: { similarArtist?: NavidromeItem[] };
+  artistInfo2?: { similarArtist?: NavidromeItem[] };
   album?: (NavidromeItem & { song?: NavidromeItem[] }) | undefined;
   song?: NavidromeItem;
+  sonicMatch?: Array<{ entry?: NavidromeItem; similarity?: number }>;
 }
 
 interface NavidromeEnvelope {
@@ -56,10 +67,51 @@ interface NavidromeEnvelope {
 }
 
 export class NavidromeClient implements MusicProvider {
+  private static readonly pageSize = 500;
+  private static readonly libraryCacheTtlMs = 60 * 60_000;
+  private readonly libraryCache = new Map<string, { value: unknown; expiresAt: number }>();
+  private readonly libraryLoads = new Map<string, Promise<unknown>>();
+
   constructor(
     private readonly settings: NavidromeSettings,
     private readonly fetchImpl: typeof fetch = fetch
   ) {}
+
+  async refreshLibrary(): Promise<{ artists: number; albums: number; songs: number; playlists: number }> {
+    this.libraryCache.clear();
+    const [artists, albums, songs, playlists] = await Promise.all([
+      this.artists(),
+      this.albums(),
+      this.songs(),
+      this.playlists()
+    ]);
+    return { artists: artists.length, albums: albums.length, songs: songs.length, playlists: playlists.length };
+  }
+
+  updateSettings(settings: NavidromeSettings): void {
+    Object.assign(this.settings, settings);
+    this.libraryCache.clear();
+  }
+
+  private cached<T>(key: string, load: () => Promise<T>): Promise<T> {
+    const now = Date.now();
+    const cached = this.libraryCache.get(key);
+    if (cached && cached.expiresAt > now) return Promise.resolve(cached.value as T);
+    const existing = this.libraryLoads.get(key);
+    if (existing) return existing as Promise<T>;
+    const pending = load()
+      .then((value) => {
+        this.libraryCache.set(key, { value, expiresAt: Date.now() + NavidromeClient.libraryCacheTtlMs });
+        return value;
+      })
+      .finally(() => this.libraryLoads.delete(key));
+    this.libraryLoads.set(key, pending);
+    return pending;
+  }
+
+  private invalidateCached(key: string): void {
+    this.libraryCache.delete(key);
+  }
 
   private async call(
     method: string,
@@ -90,24 +142,50 @@ export class NavidromeClient implements MusicProvider {
   }
 
   async artists(): Promise<MusicArtist[]> {
-    const result = await this.call('getArtists');
-    return (result.artists?.index ?? [])
-      .flatMap((index) => index.artist ?? [])
-      .map((artist) => ({
-        id: String(artist.id),
-        name: artist.name ?? 'Unknown Artist',
-        coverArt: artist.coverArt
-      }));
+    return this.cached('artists', async () => {
+      const result = await this.call('getArtists');
+      return (result.artists?.index ?? [])
+        .flatMap((index) => index.artist ?? [])
+        .map((artist) => ({
+          id: String(artist.id),
+          name: artist.name ?? 'Unknown Artist',
+          coverArt: artist.coverArt
+        }));
+    });
   }
 
   async albums(): Promise<MusicAlbum[]> {
-    const result = await this.call('getAlbumList2', { type: 'alphabeticalByName', size: 500 });
-    return (result.albumList2?.album ?? []).map((album) => this.normalizeAlbum(album));
+    return this.cached('albums', async () => {
+      const albums: MusicAlbum[] = [];
+      for (let offset = 0; ; offset += NavidromeClient.pageSize) {
+        const result = await this.call('getAlbumList2', {
+          type: 'alphabeticalByName',
+          size: NavidromeClient.pageSize,
+          offset
+        });
+        const page = result.albumList2?.album ?? [];
+        albums.push(...page.map((album) => this.normalizeAlbum(album)));
+        if (page.length < NavidromeClient.pageSize) return albums;
+      }
+    });
   }
 
   async songs(): Promise<MusicSong[]> {
-    const result = await this.call('getRandomSongs', { size: 500 });
-    return (result.randomSongs?.song ?? []).map((song) => this.normalizeSong(song));
+    return this.cached('songs', async () => {
+      const songs: MusicSong[] = [];
+      for (let offset = 0; ; offset += NavidromeClient.pageSize) {
+        const result = await this.call('search3', {
+          query: '',
+          songCount: NavidromeClient.pageSize,
+          songOffset: offset,
+          artistCount: 0,
+          albumCount: 0
+        });
+        const page = result.searchResult3?.song ?? [];
+        songs.push(...page.map((song) => this.normalizeSong(song)));
+        if (page.length < NavidromeClient.pageSize) return songs;
+      }
+    });
   }
 
   async genres(): Promise<MusicGenre[]> {
@@ -120,15 +198,17 @@ export class NavidromeClient implements MusicProvider {
   }
 
   async playlists(): Promise<MusicPlaylist[]> {
-    const result = await this.call('getPlaylists');
-    return (result.playlists?.playlist ?? []).map((playlist) => ({
-      id: String(playlist.id),
-      name: playlist.name ?? 'Untitled Playlist',
-      comment: playlist.comment,
-      songCount: Number(playlist.songCount ?? 0),
-      duration: Number(playlist.duration ?? 0),
-      coverArt: playlist.coverArt
-    }));
+    return this.cached('playlists', async () => {
+      const result = await this.call('getPlaylists');
+      return (result.playlists?.playlist ?? []).map((playlist) => ({
+        id: String(playlist.id),
+        name: playlist.name ?? 'Untitled Playlist',
+        comment: playlist.comment,
+        songCount: Number(playlist.songCount ?? 0),
+        duration: Number(playlist.duration ?? 0),
+        coverArt: playlist.coverArt
+      }));
+    });
   }
 
   async playlist(id: string): Promise<MusicPlaylistResult> {
@@ -149,6 +229,7 @@ export class NavidromeClient implements MusicProvider {
 
   async addToPlaylist(id: string, songIds: string[]): Promise<void> {
     await this.call('updatePlaylist', { playlistId: id, songIdToAdd: songIds });
+    this.invalidateCached('playlists');
   }
 
   async artist(id: string): Promise<{ artist: MusicArtist; albums: MusicAlbum[] }> {
@@ -158,6 +239,32 @@ export class NavidromeClient implements MusicProvider {
       artist: { id: String(artist.id), name: artist.name ?? 'Unknown Artist', coverArt: artist.coverArt },
       albums: (artist.album ?? []).map((album) => this.normalizeAlbum(album))
     };
+  }
+
+  async relatedArtists(id: string): Promise<MusicArtist[]> {
+    try {
+      const result = await this.call('getArtistInfo2', { id });
+      return (result.artistInfo2?.similarArtist ?? [])
+        .filter((artist) => artist.name)
+        .map((artist) => ({ id: artist.id ? String(artist.id) : '', name: artist.name as string }));
+    } catch {
+      try {
+        const result = await this.call('getArtistInfo', { id });
+        return (result.artistInfo?.similarArtist ?? [])
+          .filter((artist) => artist.name)
+          .map((artist) => ({ id: artist.id ? String(artist.id) : '', name: artist.name as string }));
+      } catch {
+        return [];
+      }
+    }
+  }
+
+  async findSonicPath(startId: string, endId: string): Promise<MusicSong[]> {
+    const result = await this.call('findSonicPath', { startSongId: startId, endSongId: endId, count: 50 });
+    return (result.sonicMatch ?? [])
+      .map((match) => match.entry)
+      .filter((entry): entry is NavidromeItem => Boolean(entry?.id))
+      .map((song) => this.normalizeSong(song));
   }
 
   async album(id: string): Promise<{ album: MusicAlbum; songs: MusicSong[] }> {
@@ -210,13 +317,23 @@ export class NavidromeClient implements MusicProvider {
   }
 
   private normalizeAlbum(value: NavidromeItem): MusicAlbum {
+    const recordLabels =
+      value.recordLabels ?? value.openSubsonicAlbumId3?.recordLabels ?? value.openSubsonicAlbumID3?.recordLabels ?? [];
     return {
       id: String(value.id),
       name: value.name ?? 'Unknown Album',
       artist: value.artist,
       artistId: value.artistId ? String(value.artistId) : undefined,
       year: value.year ? Number(value.year) : undefined,
-      coverArt: value.coverArt
+      recordLabel:
+        value.recordLabel ??
+        recordLabels
+          .map((label) => (typeof label === 'string' ? label : (label.name ?? '')))
+          .filter(Boolean)
+          .join(', '),
+      coverArt: value.coverArt,
+      playCount: value.playCount !== undefined ? Number(value.playCount) : undefined,
+      lastPlayedAt: parsePlayedAt(value.played)
     };
   }
   private normalizeSong(value: NavidromeItem): MusicSong {
@@ -228,6 +345,7 @@ export class NavidromeClient implements MusicProvider {
       artist: value.artist,
       artistId: value.artistId ? String(value.artistId) : undefined,
       genre: value.genre,
+      mood: value.mood,
       track: value.track ? Number(value.track) : undefined,
       year: value.year ? Number(value.year) : undefined,
       duration: value.duration ? Number(value.duration) : undefined,
@@ -235,7 +353,17 @@ export class NavidromeClient implements MusicProvider {
       suffix: value.suffix,
       contentType: value.contentType,
       bitRate: value.bitRate ? Number(value.bitRate) : undefined,
-      size: value.size ? Number(value.size) : undefined
+      size: value.size ? Number(value.size) : undefined,
+      playCount: value.playCount !== undefined ? Number(value.playCount) : undefined,
+      lastPlayedAt: parsePlayedAt(value.played)
     };
   }
+}
+
+function parsePlayedAt(value: string | number | undefined): number | undefined {
+  if (value === undefined || value === '') return undefined;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) return numeric > 10_000_000_000 ? Math.floor(numeric / 1000) : numeric;
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : undefined;
 }

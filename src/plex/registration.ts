@@ -40,6 +40,13 @@ type PubSubMessageHandler = (data: string) => void;
 let pubSubConnection: Promise<void> | undefined;
 const connectivityWaiters = new Map<string, (event: ConnectivityEvent) => void>();
 
+// SSE chunks are transport-level noise (including periodic keepalives), not
+// useful registration events. Keep the meaningful PubSub events in the log.
+function registrationLog(event: string, details: Record<string, unknown>): void {
+  if (event === 'pubsub_chunk' || event === 'pubsub_sse_event') return;
+  console.info(JSON.stringify({ event, ...details }));
+}
+
 function commonHeaders(identity: Identity, serverName: string): Record<string, string> {
   return plexServerHeaders(identity, serverName);
 }
@@ -60,12 +67,12 @@ function publishXml(
 ): string {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<MediaContainer size="1">\n  <Server relay="1" relayProtocols="ssh" name="${xml(serverName)}" host="" address="${xml(publicAddress)}" localAddresses="${xml(localHost)}" port="${publicPort}" machineIdentifier="${identity.machineIdentifier}" version="${PLEX_SERVER_VERSION}" date="${Date.now() * 1000}" />\n</MediaContainer>`;
 }
-function deviceQuery(publicUrl: string, localHost: string, publicPort: number, token: string): string {
+function deviceQuery(publicUrl: string, localHost: string, localPort: number, token: string): string {
   const query = new URLSearchParams();
   query.append('connections[0][uri]', publicUrl);
   query.append('connections[0][prefixLength]', '0');
   if (localHost) {
-    query.append('connections[1][uri]', `http://${localHost}:${publicPort}`);
+    query.append('connections[1][uri]', `http://${localHost}:${localPort}`);
     query.append('connections[1][prefixLength]', '24');
   }
   query.set('httpsEnabled', '1');
@@ -354,7 +361,7 @@ export async function startRegisteredPubSub(
   serverToken: string,
   accountToken: string,
   fetchImpl: typeof fetch = fetch,
-  log: Log = (event, details) => console.info(JSON.stringify({ event, ...details }))
+  log: Log = registrationLog
 ): Promise<void> {
   if (!serverToken || !accountToken) {
     log('pubsub_unavailable', { reason: !serverToken ? 'server_token_missing' : 'account_token_missing' });
@@ -526,18 +533,19 @@ export async function publishServer(
   serverToken: string,
   accountToken = '',
   fetchImpl: typeof fetch = fetch,
-  log: Log = (event, details) => console.info(JSON.stringify({ event, ...details }))
+  log: Log = registrationLog,
+  localPort = 32400
 ): Promise<RegistrationResult> {
   if (!publicUrl) throw new Error('PLEXBRIDGE_PUBLIC_URL is required to publish PlexBridge');
   if (!serverToken) throw new Error('Plex server token is required to publish PlexBridge');
   const normalizedUrl = publicUrl.replace(/\/$/, '');
   const publicHost = new URL(normalizedUrl).hostname;
+  const publicPort = Number(new URL(normalizedUrl).port || 32400);
   const dnsAddress = (await lookup(publicHost)).address;
   const publicAddress = await publicAddressFromPlex(identity, serverName, dnsAddress, fetchImpl, log);
-  const publicPort = 32400;
   const localHost = localAddress();
   const publishBody = publishXml(identity, serverName, publicAddress, localHost, publicPort);
-  const deviceParams = deviceQuery(normalizedUrl, localHost, publicPort, serverToken);
+  const deviceParams = deviceQuery(normalizedUrl, localHost, localPort, serverToken);
   const headers = { ...commonHeaders(identity, serverName), 'X-Plex-Token': serverToken };
   const publishHeaders = { ...headers, 'Content-Type': 'application/xml' };
   log('registration_start', {

@@ -3,13 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>PlexBridge setup</title>
+  <title>PlexBridge admin</title>
   <link rel="stylesheet" href="/admin.css">
 </head>
 <body>
-  <h1>PlexBridge setup</h1>
-  <p>Complete setup once. PlexBridge will resume automatically after a restart.</p>
-  <div class="card">
+  <main>
+  <p class="eyebrow">PLEXBRIDGE</p>
+  <h1>Admin</h1>
+  <p class="lede">Manage the Plex connection, Navidrome access, and library synchronization.</p>
+  <section id="plex-card" class="card">
     <p id="step" class="step">Checking setup…</p>
     <input id="token" type="password" autocomplete="off" placeholder="Paste a short-lived Plex claim token">
     <button id="claim" type="button">Claim this server</button>
@@ -17,8 +19,20 @@
     <p class="hint">After the server is claimed, claiming is locked. Sign in is the only action needed to finish linking it to your Plex account.</p>
     <p id="status">Checking status…</p>
     <p id="url"></p>
-    <pre id="details"></pre>
-  </div>
+    <details id="debug"><summary>Show registration details</summary><pre id="debug-details"></pre></details>
+  </section>
+  <section class="card">
+    <div class="section-heading"><h2>Navidrome</h2><span id="nav-status" class="muted">Loading…</span></div>
+    <form id="settings-form">
+      <label>URL<input id="nav-url" name="navidromeUrl" type="url" placeholder="https://music.example.com"></label>
+      <label>Username<input id="nav-user" name="navidromeUsername" autocomplete="username"></label>
+      <label>Password<input id="nav-password" name="navidromePassword" type="password" autocomplete="new-password" placeholder="Leave blank to keep the current password"></label>
+      <div class="schedule-row"><label class="check"><input id="sync-enabled" type="checkbox"> Enable scheduled sync</label><label>Daily time<input id="sync-time" type="time"></label></div>
+      <div class="actions"><button type="submit">Save settings</button><button id="sync" type="button" class="secondary">Sync library now</button></div>
+    </form>
+    <p id="sync-status" class="hint"></p>
+  </section>
+  </main>
   <script src="/admin.js"></script>
 </body>
 </html>

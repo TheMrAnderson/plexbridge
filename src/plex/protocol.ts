@@ -2,7 +2,12 @@ import { PLEX_SERVER_VERSION } from './profile.js';
 import { createHash } from 'node:crypto';
 
 const plexServerVersion = PLEX_SERVER_VERSION;
-const plexLibraryUuid = '7b7a8d4e-3e90-4b74-9a2e-4f6c9c2e8d11';
+const defaultLibraryUuid = '7b7a8d4e-3e90-4b74-9a2e-4f6c9c2e8d11';
+let plexLibraryUuid = defaultLibraryUuid;
+
+export function configureLibraryUuid(libraryUuid: string): void {
+  plexLibraryUuid = libraryUuid;
+}
 const plexOwnerFeatures =
   'adaptive_bitrate,camera_upload,collections,content_filter,download_certificates,dvr,hardware_transcoding,home,item_clusters,loudness,lyrics,music-analysis,music_videos,pass,premium_music_metadata,radio,server-manager,session_bandwidth_restrictions,sync,trailers,tuner-sharing,type-first,unsupportedtuners,webhooks';
 
@@ -15,6 +20,12 @@ const header = '<?xml version="1.0" encoding="UTF-8"?>';
 function playlistGuid(id: string): string {
   const hex = createHash('sha256').update(id).digest('hex').slice(0, 32);
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20)}`;
+}
+
+export function genreKey(name: string): string {
+  return String(
+    20000 + (parseInt(createHash('sha256').update(name.toLocaleLowerCase()).digest('hex').slice(0, 8), 16) % 80000)
+  );
 }
 
 export function serverRoot(name: string, machineIdentifier: string, _publicUrl: string, claimed: boolean): string {
@@ -135,6 +146,71 @@ export function libraryHubsJson(): string {
   });
 }
 
+export function searchJson(hubs: Array<{ title: string; type: string; items: PlexItem[] }>, query = ''): string {
+  return JSON.stringify({
+    MediaContainer: {
+      size: hubs.length,
+      Hub: hubs.map((hub) => {
+        const pluralType = hub.type === 'artist' ? 'artists' : hub.type === 'album' ? 'albums' : 'tracks';
+        const type = hub.type === 'artist' ? 8 : hub.type === 'album' ? 9 : 10;
+        const searchKey = `/hubs/search?query=${encodeURIComponent(query)}&type=${type}`;
+        return {
+          key: searchKey,
+          hubKey: searchKey,
+          title: hub.title,
+          type: hub.type,
+          hubIdentifier: `search.${pluralType}`,
+          size: hub.items.length,
+          more: false,
+          Metadata: hub.items.map((item) => ({
+            ...item,
+            librarySectionID: 1,
+            librarySectionKey: '/library/sections/1',
+            librarySectionTitle: 'Music',
+            librarySectionUUID: plexLibraryUuid,
+            ...(item.thumb
+              ? {
+                  Image: [
+                    { alt: item.title, type: 'coverPoster', url: item.thumb },
+                    ...(item.art && item.art !== item.thumb
+                      ? [{ alt: item.title, type: 'background', url: item.art }]
+                      : [])
+                  ]
+                }
+              : {}),
+            ...(item.type === 'track' && item.media
+              ? {
+                  Media: [
+                    {
+                      id: 1,
+                      duration: (item.media.duration ?? item.duration ?? 0) * 1000,
+                      protocol: 'http',
+                      optimizedForStreaming: true,
+                      audioChannels: 2,
+                      container: item.media.container ?? 'mp3',
+                      audioCodec: item.media.audioCodec ?? 'mp3',
+                      bitrate: item.media.bitrate ?? 0,
+                      Part: [
+                        {
+                          id: 1,
+                          key: item.media.partKey,
+                          duration: (item.media.duration ?? item.duration ?? 0) * 1000,
+                          size: item.media.size ?? 0,
+                          protocol: 'http',
+                          container: item.media.container ?? 'mp3'
+                        }
+                      ]
+                    }
+                  ]
+                }
+              : {})
+          }))
+        };
+      })
+    }
+  });
+}
+
 export function playlistsJson(
   playlists?: Array<{
     id: string;
@@ -146,7 +222,9 @@ export function playlistsJson(
     duration: number;
     smart?: boolean;
     icon?: string;
-  }>
+  }>,
+  totalSize = playlists?.length ?? 0,
+  offset = 0
 ): string {
   const now = Math.floor(Date.now() / 1000);
   const Metadata = (playlists ?? []).map((playlist) => {
@@ -173,7 +251,7 @@ export function playlistsJson(
       updatedAt: now
     };
   });
-  return JSON.stringify({ MediaContainer: { size: Metadata.length, totalSize: Metadata.length, offset: 0, Metadata } });
+  return JSON.stringify({ MediaContainer: { size: Metadata.length, totalSize, offset, Metadata } });
 }
 
 export function emptyPlaylistSectionJson(): string {
@@ -199,14 +277,32 @@ export function emptyPlaylistSectionJson(): string {
   });
 }
 
-export function genresJson(genres: Array<{ name: string; songCount?: number; albumCount?: number }> = []): string {
-  const Directory = genres.map((genre, index) => {
-    const key = String(index + 1);
-    return { fastKey: `/library/sections/1/all?genre=${key}`, key, title: genre.name, type: 'genre' };
+export function genresJson(
+  genres: Array<{ name: string; key?: string; songCount?: number; albumCount?: number }> = [],
+  viewType = '10',
+  totalSize = genres.length,
+  offset = 0,
+  filter = 'genre'
+): string {
+  const Directory = genres.map((genre) => {
+    const key = genre.key ?? genreKey(genre.name);
+    const fastKey = `/library/sections/1/all?type=${viewType}&${filter}=${key}`;
+    return {
+      fastKey,
+      // Plex uses the short key as the genre identity and fastKey as the
+      // direct path to the filtered library contents.
+      key,
+      title: genre.name,
+      type: filter,
+      ...(genre.songCount !== undefined ? { songCount: genre.songCount } : {}),
+      ...(genre.albumCount !== undefined ? { albumCount: genre.albumCount } : {})
+    };
   });
   return JSON.stringify({
     MediaContainer: {
       size: Directory.length,
+      totalSize,
+      offset,
       allowSync: false,
       art: '/:/resources/artist-fanart.jpg',
       content: 'secondary',
@@ -216,12 +312,33 @@ export function genresJson(genres: Array<{ name: string; songCount?: number; alb
       nocache: true,
       thumb: '/:/resources/artist.png',
       title1: 'Music',
-      title2: 'By Genre',
+      title2: filter === 'mood' ? 'By Mood' : filter === 'studio' ? 'By Record Label' : 'By Genre',
       viewGroup: 'secondary',
       viewMode: 65592,
       Directory
     }
   });
+}
+
+export function genresXml(
+  genres: Array<{ name: string; key?: string; songCount?: number; albumCount?: number }> = [],
+  viewType = '10',
+  totalSize = genres.length,
+  offset = 0,
+  filter = 'genre'
+): string {
+  const directories = genres
+    .map((genre) => {
+      const key = genre.key ?? genreKey(genre.name);
+      const fastKey = `/library/sections/1/all?type=${viewType}&${filter}=${key}`;
+      const counts = [
+        genre.songCount === undefined ? '' : ` songCount="${genre.songCount}"`,
+        genre.albumCount === undefined ? '' : ` albumCount="${genre.albumCount}"`
+      ].join('');
+      return `<Directory fastKey="${fastKey.replace(/&/g, '&amp;')}" key="${fastKey.replace(/&/g, '&amp;')}" title="${xmlEscape(genre.name)}" type="${filter}"${counts}/>`;
+    })
+    .join('');
+  return `${header}<MediaContainer size="${genres.length}" totalSize="${totalSize}" offset="${offset}" allowSync="0" content="secondary" identifier="com.plexapp.plugins.library" librarySectionID="1" librarySectionTitle="Music" mediaTagPrefix="/system/bundle/media/flags/" mediaTagVersion="1" nocache="1" title1="Music" title2="${filter === 'mood' ? 'By Mood' : filter === 'studio' ? 'By Record Label' : 'By Genre'}" viewGroup="secondary" viewMode="65592">${directories}</MediaContainer>`;
 }
 
 export function emptyLibraryFilterJson(title: string): string {
@@ -341,6 +458,26 @@ export function playQueueJson(item: PlexItem, queueId: string, sourceUri: string
       playQueueTotalCount: 1,
       playQueueVersion: 1,
       Metadata: [metadata]
+    }
+  });
+}
+
+export function emptyPlayQueueJson(queueId: string, sourceUri: string): string {
+  return JSON.stringify({
+    MediaContainer: {
+      size: 0,
+      totalSize: 0,
+      offset: 0,
+      identifier: 'com.plexapp.plugins.library',
+      mediaTagPrefix: '/system/bundle/media/flags/',
+      mediaTagVersion: 1,
+      playQueueID: Number(queueId),
+      playQueueSelectedItemOffset: 0,
+      playQueueShuffled: false,
+      playQueueSourceURI: sourceUri,
+      playQueueTotalCount: 0,
+      playQueueVersion: 1,
+      Metadata: []
     }
   });
 }
@@ -710,6 +847,8 @@ export interface PlexItem {
   parentIndex?: number;
   duration?: number;
   year?: number;
+  viewCount?: number;
+  lastViewedAt?: number;
   parentYear?: number;
   summary?: string;
   genre?: string;
@@ -726,7 +865,12 @@ export interface PlexItem {
   };
 }
 
-export function libraryItems(items: PlexItem[], viewGroup: 'artist' | 'album' | 'track'): string {
+export function libraryItems(
+  items: PlexItem[],
+  viewGroup: 'artist' | 'album' | 'track',
+  totalSize = items.length,
+  offset = 0
+): string {
   const entries = items.map((item) => {
     const attrs = [
       `ratingKey="${xmlEscape(item.ratingKey)}"`,
@@ -745,6 +889,8 @@ export function libraryItems(items: PlexItem[], viewGroup: 'artist' | 'album' | 
       if (value) attrs.push(`${name}="${xmlEscape(value)}"`);
     if (item.index !== undefined) attrs.push(`index="${item.index}"`);
     if (item.year !== undefined) attrs.push(`year="${item.year}"`);
+    if (item.viewCount !== undefined) attrs.push(`viewCount="${item.viewCount}"`);
+    if (item.lastViewedAt !== undefined) attrs.push(`lastViewedAt="${item.lastViewedAt}"`);
     if (item.duration !== undefined) attrs.push(`duration="${item.duration * 1000}"`);
     if (item.type !== 'track') return `<Directory ${attrs.join(' ')}/>`;
     const media = item.media
@@ -752,10 +898,15 @@ export function libraryItems(items: PlexItem[], viewGroup: 'artist' | 'album' | 
       : '';
     return `<Track ${attrs.join(' ')}>${media}</Track>`;
   });
-  return `${header}<MediaContainer size="${items.length}" viewGroup="${viewGroup}" allowSync="0">${entries.join('')}</MediaContainer>`;
+  return `${header}<MediaContainer size="${items.length}" totalSize="${totalSize}" offset="${offset}" viewGroup="${viewGroup}" allowSync="0">${entries.join('')}</MediaContainer>`;
 }
 
-export function libraryItemsJson(items: PlexItem[], viewGroup: 'artist' | 'album' | 'track'): string {
+export function libraryItemsJson(
+  items: PlexItem[],
+  viewGroup: 'artist' | 'album' | 'track',
+  totalSize = items.length,
+  offset = 0
+): string {
   const entries = items.map((item) => {
     const value: Record<string, unknown> = {
       ratingKey: item.ratingKey,
@@ -795,6 +946,8 @@ export function libraryItemsJson(items: PlexItem[], viewGroup: 'artist' | 'album
     if (item.index !== undefined) value.index = item.index;
     if (item.parentIndex !== undefined) value.parentIndex = item.parentIndex;
     if (item.year !== undefined) value.year = item.year;
+    if (item.viewCount !== undefined) value.viewCount = item.viewCount;
+    if (item.lastViewedAt !== undefined) value.lastViewedAt = item.lastViewedAt;
     if (item.parentYear !== undefined) value.parentYear = item.parentYear;
     if (item.duration !== undefined) value.duration = item.duration * 1000;
     if (item.genre) value.Genre = [{ tag: item.genre }];
@@ -826,8 +979,8 @@ export function libraryItemsJson(items: PlexItem[], viewGroup: 'artist' | 'album
   return JSON.stringify({
     MediaContainer: {
       size: entries.length,
-      totalSize: entries.length,
-      offset: 0,
+      totalSize,
+      offset,
       allowSync: true,
       art: '/:/resources/artist-fanart.jpg',
       identifier: 'com.plexapp.plugins.library',

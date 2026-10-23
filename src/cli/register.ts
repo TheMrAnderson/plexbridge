@@ -16,8 +16,11 @@ await ensurePlexCertificate(identity, settings.configDir, credentials.serverToke
 const registration = await publishServer(
   identity,
   settings.serverName,
-  await plexDirectUrl(settings.configDir, settings.publicUrl),
+  await plexDirectUrl(settings.configDir, settings.publicUrl, settings.publicPort),
   credentials.serverToken,
-  credentials.authToken ?? ''
+  credentials.authToken ?? '',
+  undefined,
+  undefined,
+  settings.port
 );
 console.log(JSON.stringify(registration, null, 2));

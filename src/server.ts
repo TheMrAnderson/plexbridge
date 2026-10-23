@@ -80,9 +80,12 @@ void (async () => {
     await publishServer(
       identity,
       settings.serverName,
-      await plexDirectUrl(settings.configDir, settings.publicUrl),
+      await plexDirectUrl(settings.configDir, settings.publicUrl, settings.publicPort),
       credentials.serverToken,
-      credentials.authToken
+      credentials.authToken,
+      undefined,
+      undefined,
+      settings.port
     );
   } catch (error) {
     console.warn(

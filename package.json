@@ -1,6 +1,6 @@
 {
   "name": "plexbridge",
-  "version": "0.1.7",
+  "version": "1.0.0",
   "license": "AGPL-3.0-only",
   "description": "A Plex-compatible music bridge for provider-backed libraries",
   "private": true,
@@ -26,7 +26,7 @@
     "plex:login": "PLEXBRIDGE_CONFIG_DIR=./config npm run build && PLEXBRIDGE_CONFIG_DIR=./config node --env-file-if-exists=.env dist/src/cli/auth.js",
     "plex:claim": "PLEXBRIDGE_CONFIG_DIR=./config npm run build && PLEXBRIDGE_CONFIG_DIR=./config node --env-file-if-exists=.env dist/src/cli/claim.js",
     "plex:register": "PLEXBRIDGE_CONFIG_DIR=./config npm run build && PLEXBRIDGE_CONFIG_DIR=./config node --env-file-if-exists=.env dist/src/cli/register.js",
-    "test": "npm run check && npm run build && node --test dist/tests/api.test.js dist/tests/certificate.test.js",
+    "test": "npm run check && npm run build && node --test dist/tests/api.test.js dist/tests/certificate.test.js dist/tests/navidrome-client.test.js",
     "dev": "PLEXBRIDGE_CONFIG_DIR=./config npm run build && node scripts/dev.mjs"
   },
   "dependencies": {

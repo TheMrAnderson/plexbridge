@@ -13,23 +13,15 @@ export function startDiscovery(name: string, port: number, machineIdentifier: st
       if (message.toString().startsWith('M-SEARCH') || message.toString().includes('HTTP/1.1'))
         socket.send(response, remote.port, remote.address);
     });
-    socket.on('error', (error) =>
-      console.warn(JSON.stringify({ event: 'discovery_error', port: discoveryPort, error: error.message }))
-    );
-    try {
-      socket.bind(discoveryPort, '0.0.0.0');
+    socket.once('listening', () => {
       sockets.push(socket);
       console.info(JSON.stringify({ event: 'discovery_listener_active', port: discoveryPort }));
-    } catch (error) {
-      console.warn(
-        JSON.stringify({
-          event: 'discovery_unavailable',
-          port: discoveryPort,
-          error: error instanceof Error ? error.message : 'unknown error'
-        })
-      );
+    });
+    socket.once('error', (error) => {
+      console.warn(JSON.stringify({ event: 'discovery_unavailable', port: discoveryPort, error: error.message }));
       socket.close();
-    }
+    });
+    socket.bind(discoveryPort, '0.0.0.0');
   }
   return sockets;
 }

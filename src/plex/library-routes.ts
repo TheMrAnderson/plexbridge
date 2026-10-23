@@ -1,16 +1,21 @@
 import { Readable } from 'node:stream';
+import { readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { ReadableStream } from 'node:stream/web';
 import type { MusicProvider } from '../music/types.js';
 import {
   emptyLibraryFilterJson,
   emptyPlaylistSectionJson,
+  emptyPlayQueueJson,
   firstCharacterJson,
   genresJson,
+  genresXml,
   libraryItems,
   libraryItemsJson,
   playQueueJson,
   playlistQueueJson,
+  searchJson,
   timelineJson
 } from './protocol.js';
 import { albumItem, artistItem, directPlayableFormats, parseMetadataKey as parseKey, songItem } from './metadata.js';
@@ -25,6 +30,7 @@ interface RouteApp {
   get(path: string, handler: (request: RouteRequest, reply: RouteReply) => unknown): unknown;
   post(path: string, handler: (request: RouteRequest, reply: RouteReply) => unknown): unknown;
   put(path: string, handler: (request: RouteRequest, reply: RouteReply) => unknown): unknown;
+  delete(path: string, handler: (request: RouteRequest, reply: RouteReply) => unknown): unknown;
 }
 export interface PlayRecord {
   trackId: string;
@@ -35,9 +41,19 @@ export interface PlayRecord {
   player: string;
   source: 'timeline' | 'estimated' | 'plex_scrobble';
 }
+export interface ActivePlayRecord {
+  trackId: string;
+  positionMs: number;
+  durationMs: number;
+  state: string;
+  player: string;
+  startedAt: number;
+}
 interface LibraryRouteDependencies {
+  configDir: string;
   music: MusicProvider;
   playQueues: Map<string, { item: PlexItem; sourceUri: string; response?: string }>;
+  savePlayQueues: () => Promise<void>;
   playlistIds: Map<string, string>;
   loadPlaylistIds: () => Promise<void>;
   preserveSourceFormats: boolean;
@@ -45,6 +61,15 @@ interface LibraryRouteDependencies {
   setTimeout?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
   clearTimeout?: (timer: ReturnType<typeof setTimeout>) => void;
   onPlay?: (play: PlayRecord) => Promise<void> | void;
+  onPlaybackState?: (play: ActivePlayRecord | undefined) => Promise<void> | void;
+}
+
+interface TagBucket {
+  name: string;
+  key: string;
+  artistIds: Set<string>;
+  albumIds: Set<string>;
+  songIds: Set<string>;
 }
 
 interface PlaybackState {
@@ -60,23 +85,382 @@ interface PlaybackState {
 
 const SCROBBLE_THRESHOLD = 0.75;
 const FALLBACK_THRESHOLD = 1.1;
+const MAX_LIBRARY_PAGE_SIZE = 500;
+const BUILDER_CONTEXT_TTL_MS = 45_000;
+
+function libraryPage<T>(
+  items: T[],
+  query: Record<string, string | undefined>
+): { items: T[]; totalSize: number; offset: number } {
+  const parsedOffset = Number(query.offset ?? 0);
+  const parsedSize = Number(query.size ?? query.limit ?? MAX_LIBRARY_PAGE_SIZE);
+  const offset = Number.isInteger(parsedOffset) && parsedOffset > 0 ? parsedOffset : 0;
+  const size =
+    Number.isInteger(parsedSize) && parsedSize > 0
+      ? Math.min(parsedSize, MAX_LIBRARY_PAGE_SIZE)
+      : MAX_LIBRARY_PAGE_SIZE;
+  return { items: items.slice(offset, offset + size), totalSize: items.length, offset };
+}
+
+function playCountFilter<T>(
+  items: T[],
+  query: Record<string, string | undefined>,
+  getYear: (item: T) => number | undefined,
+  getPlayCount: (item: T) => number | undefined,
+  getLastPlayedAt: (item: T) => number | undefined
+): T[] {
+  const year = query.year === undefined ? undefined : Number(query.year);
+  const minimum = query['viewCount>'] === undefined ? undefined : Number(query['viewCount>']);
+  const maximum = query['viewCount<'] === undefined ? undefined : Number(query['viewCount<']);
+  let filtered = items.filter((item) => {
+    const itemYear = getYear(item);
+    const count = getPlayCount(item) ?? 0;
+    return (
+      (year === undefined || (Number.isFinite(year) && itemYear === year)) &&
+      (minimum === undefined || (Number.isFinite(minimum) && count >= minimum)) &&
+      (maximum === undefined || (Number.isFinite(maximum) && count <= maximum))
+    );
+  });
+  const sort = query.sort?.split(',')[0] ?? '';
+  const [field, direction = 'asc'] = sort.split(':');
+  if (field === 'viewCount' || field === 'lastViewedAt') {
+    const multiplier = direction.toLowerCase() === 'desc' ? -1 : 1;
+    filtered = filtered
+      .map((item, index) => ({ item, index }))
+      .sort((left, right) => {
+        const leftValue = field === 'viewCount' ? (getPlayCount(left.item) ?? 0) : (getLastPlayedAt(left.item) ?? 0);
+        const rightValue = field === 'viewCount' ? (getPlayCount(right.item) ?? 0) : (getLastPlayedAt(right.item) ?? 0);
+        return (leftValue - rightValue) * multiplier || left.index - right.index;
+      })
+      .map(({ item }) => item);
+  }
+  return filtered;
+}
 
 export function registerLibraryRoutes(
   app: RouteApp,
   {
     music,
+    configDir,
     playQueues,
+    savePlayQueues,
     playlistIds,
     loadPlaylistIds,
     preserveSourceFormats,
     now = Date.now,
     setTimeout: setTimeoutFn = setTimeout,
     clearTimeout: clearTimeoutFn = clearTimeout,
-    onPlay
+    onPlay,
+    onPlaybackState
   }: LibraryRouteDependencies
-): void {
+): { invalidateLibraryCaches: () => void } {
   const xml = (body: string) => ({ body, type: 'application/xml; charset=utf-8' });
+  const builderContexts = new Map<string, { type: 'artist' | 'album'; expiresAt: number }>();
+  const plexClientId = (request: RouteRequest): string | undefined => {
+    const value = request.headers['x-plex-client-identifier'];
+    return Array.isArray(value) ? value[0] : value;
+  };
+  const builderContext = (request: RouteRequest): 'artist' | 'album' | undefined => {
+    const clientId = plexClientId(request);
+    if (!clientId) return undefined;
+    const context = builderContexts.get(clientId);
+    if (!context || context.expiresAt <= now()) {
+      builderContexts.delete(clientId);
+      return undefined;
+    }
+    return context.type;
+  };
+  let genreIndexCache: Promise<Map<string, TagBucket>> | undefined;
+  let moodIndexCache: Promise<Map<string, TagBucket>> | undefined;
+  let studioIndexCache: Promise<Map<string, TagBucket>> | undefined;
+  let genreIdsCache: Promise<Map<string, string>> | undefined;
+  let moodIdsCache: Promise<Map<string, string>> | undefined;
+  let studioIdsCache: Promise<Map<string, string>> | undefined;
+  const tagIds = async (fileName: string, names: string[], cache: 'genre' | 'mood' | 'studio') => {
+    const existing = cache === 'genre' ? genreIdsCache : cache === 'mood' ? moodIdsCache : studioIdsCache;
+    if (existing) return existing;
+    const pending = (async () => {
+      const file = join(configDir, fileName);
+      let stored: Record<string, string> = {};
+      try {
+        const parsed = JSON.parse(await readFile(file, 'utf8')) as {
+          genres?: Record<string, string>;
+          moods?: Record<string, string>;
+          studios?: Record<string, string>;
+        };
+        stored =
+          cache === 'genre' ? (parsed.genres ?? {}) : cache === 'mood' ? (parsed.moods ?? {}) : (parsed.studios ?? {});
+      } catch {
+        // The mapping is created on the first directory request.
+      }
+      const ids = new Map(Object.entries(stored));
+      const used = new Set<string>();
+      let changed = false;
+      let nextId = cache === 'genre' ? 20000 : cache === 'mood' ? 30000 : 40000;
+      for (const [name, value] of ids) {
+        if (/^\d{1,6}$/.test(value) && !used.has(value)) {
+          used.add(value);
+          continue;
+        }
+        while (used.has(String(nextId))) nextId += 1;
+        ids.set(name, String(nextId));
+        used.add(String(nextId));
+        nextId += 1;
+        changed = true;
+      }
+      for (const name of names) {
+        const normalized = name.toLocaleLowerCase();
+        if (ids.has(normalized)) continue;
+        while (used.has(String(nextId))) nextId += 1;
+        ids.set(normalized, String(nextId));
+        used.add(String(nextId));
+        nextId += 1;
+        changed = true;
+      }
+      if (changed)
+        await writeFile(
+          file,
+          `${JSON.stringify({ version: 1, [cache === 'genre' ? 'genres' : cache === 'mood' ? 'moods' : 'studios']: Object.fromEntries(ids) }, null, 2)}\n`
+        );
+      return ids;
+    })();
+    if (cache === 'genre') genreIdsCache = pending;
+    else if (cache === 'mood') moodIdsCache = pending;
+    else studioIdsCache = pending;
+    return pending;
+  };
+  const genreIds = async (names: string[]) => {
+    return tagIds('plex-genre-ids.json', names, 'genre');
+  };
+  const moodIds = async (names: string[]) => {
+    return tagIds('plex-mood-ids.json', names, 'mood');
+  };
+  const studioIds = async (names: string[]) => {
+    return tagIds('plex-studio-ids.json', names, 'studio');
+  };
+  const splitValues = (value?: string) =>
+    (value ?? '')
+      .split(/[,;|]/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+  const buildTagIndex = async (tag: 'genre' | 'mood') => {
+    const [artists, songs, names] = await Promise.all([
+      music.artists(),
+      music.songs(),
+      tag === 'genre' ? music.genres() : Promise.resolve([])
+    ]);
+    const tagNames =
+      tag === 'genre' ? names.map((item) => item.name) : [...new Set(songs.flatMap((song) => splitValues(song.mood)))];
+    const ids = await (tag === 'genre' ? genreIds(tagNames) : moodIds(tagNames));
+    const buckets = new Map<string, TagBucket>();
+    for (const name of tagNames) {
+      const normalized = name.toLocaleLowerCase();
+      const key = ids.get(normalized);
+      if (!key) continue;
+      buckets.set(normalized, { name, key, artistIds: new Set(), albumIds: new Set(), songIds: new Set() });
+    }
+    const artistIdsByName = new Map(artists.map((artist) => [artist.name.toLocaleLowerCase(), artist.id]));
+    for (const song of songs)
+      for (const value of splitValues(tag === 'genre' ? song.genre : song.mood)) {
+        const bucket = buckets.get(value.toLocaleLowerCase());
+        if (!bucket) continue;
+        bucket.songIds.add(song.id);
+        if (song.albumId) bucket.albumIds.add(song.albumId);
+        for (const artistName of splitValues(song.artist)) {
+          const artistId = artistIdsByName.get(artistName.toLocaleLowerCase());
+          if (artistId) bucket.artistIds.add(artistId);
+        }
+        if (song.artistId) bucket.artistIds.add(song.artistId);
+      }
+    return buckets;
+  };
+  const genreIndex = async () => {
+    if (genreIndexCache) return genreIndexCache;
+    genreIndexCache = buildTagIndex('genre');
+    return genreIndexCache;
+  };
+  const moodIndex = async () => {
+    if (moodIndexCache) return moodIndexCache;
+    moodIndexCache = buildTagIndex('mood');
+    return moodIndexCache;
+  };
+  const studioIndex = async () => {
+    if (studioIndexCache) return studioIndexCache;
+    studioIndexCache = (async () => {
+      const [artists, albums, songs] = await Promise.all([music.artists(), music.albums(), music.songs()]);
+      const labelNames = [...new Set(albums.flatMap((album) => splitValues(album.recordLabel)))];
+      const ids = await studioIds(labelNames);
+      const buckets = new Map<string, TagBucket>();
+      for (const name of labelNames) {
+        const normalized = name.toLocaleLowerCase();
+        const key = ids.get(normalized);
+        if (key) buckets.set(normalized, { name, key, artistIds: new Set(), albumIds: new Set(), songIds: new Set() });
+      }
+      const artistIdsByName = new Map(artists.map((artist) => [artist.name.toLocaleLowerCase(), artist.id]));
+      for (const album of albums)
+        for (const label of splitValues(album.recordLabel)) {
+          const bucket = buckets.get(label.toLocaleLowerCase());
+          if (!bucket) continue;
+          bucket.albumIds.add(album.id);
+          if (album.artistId) bucket.artistIds.add(album.artistId);
+          for (const artistName of splitValues(album.artist)) {
+            const artistId = artistIdsByName.get(artistName.toLocaleLowerCase());
+            if (artistId) bucket.artistIds.add(artistId);
+          }
+        }
+      for (const song of songs)
+        for (const bucket of buckets.values())
+          if (song.albumId && bucket.albumIds.has(song.albumId)) bucket.songIds.add(song.id);
+      return buckets;
+    })();
+    return studioIndexCache;
+  };
+  const genreQuery = (query: Record<string, string | undefined>) => {
+    if (!query.genre) return undefined;
+    try {
+      return decodeURIComponent(query.genre).toLocaleLowerCase();
+    } catch {
+      return query.genre.toLocaleLowerCase();
+    }
+  };
+  const moodQuery = (query: Record<string, string | undefined>) => {
+    if (!query.mood) return undefined;
+    try {
+      return decodeURIComponent(query.mood).toLocaleLowerCase();
+    } catch {
+      return query.mood.toLocaleLowerCase();
+    }
+  };
+  const studioQuery = (query: Record<string, string | undefined>) => {
+    if (!query.studio) return undefined;
+    try {
+      return decodeURIComponent(query.studio).toLocaleLowerCase();
+    } catch {
+      return query.studio.toLocaleLowerCase();
+    }
+  };
+  const findTagBucket = (buckets: Map<string, TagBucket>, value: string | undefined) => {
+    if (!value) return undefined;
+    return buckets.get(value) ?? [...buckets.values()].find((bucket) => bucket.key === value);
+  };
   let nextPlayQueueId = 1;
+  const clearedPlayQueues = new Map<string, string>();
+  const nextQueueId = () => {
+    while (playQueues.has(String(nextPlayQueueId))) nextPlayQueueId += 1;
+    return String(nextPlayQueueId++);
+  };
+  const decodeQueueUri = (value: string): string => {
+    let decoded = value;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const next = decodeURIComponent(decoded);
+        if (next === decoded) break;
+        decoded = next;
+      } catch {
+        break;
+      }
+    }
+    return decoded;
+  };
+  const artistMixIds = (uri: string): string[] => {
+    const directory = decodeQueueUri(uri).match(/\/library\/sections\/1\/all(?:\?[^#]*)?/u)?.[0];
+    if (!directory) return [];
+    try {
+      const parsed = new URL(directory, 'http://plexbridge.local');
+      return (parsed.searchParams.get('artist.id') ?? '')
+        .split(',')
+        .map((value) => decodeURIComponent(value).trim())
+        .filter((value) => value.startsWith('a-'))
+        .map((value) => value.slice(2))
+        .filter(Boolean);
+    } catch {
+      return [];
+    }
+  };
+  const albumMixIds = (uri: string): string[] => {
+    const directory = decodeQueueUri(uri).match(/\/library\/sections\/1\/all(?:\?[^#]*)?/u)?.[0];
+    if (!directory) return [];
+    try {
+      const parsed = new URL(directory, 'http://plexbridge.local');
+      return (parsed.searchParams.get('album.id') ?? '')
+        .split(',')
+        .map((value) => decodeURIComponent(value).trim())
+        .filter((value) => value.startsWith('l-'))
+        .map((value) => value.slice(2))
+        .filter(Boolean);
+    } catch {
+      return [];
+    }
+  };
+  const providerRelatedArtistIds = async (
+    artists: Awaited<ReturnType<MusicProvider['artists']>>,
+    seedIds: string[]
+  ) => {
+    if (!music.relatedArtists) return [];
+    const artistsByName = new Map(artists.map((artist) => [artist.name.toLocaleLowerCase(), artist.id]));
+    const recommendations = await Promise.all(seedIds.map((id) => music.relatedArtists?.(id) ?? Promise.resolve([])));
+    return [
+      ...new Set(
+        recommendations
+          .flat()
+          .map((artist) =>
+            artist.id && artists.some((candidate) => candidate.id === artist.id)
+              ? artist.id
+              : artistsByName.get(artist.name.toLocaleLowerCase())
+          )
+          .filter((id): id is string => Boolean(id))
+          .filter((id) => !seedIds.includes(id))
+      )
+    ];
+  };
+  const artistMixQueue = async (
+    uri: string
+  ): Promise<
+    { items: PlexItem[]; queueId: string; response: string; sourceUri: string; relatedArtistIds: string[] } | undefined
+  > => {
+    const ids = artistMixIds(uri);
+    if (!ids.length) return undefined;
+    const [artists, songs] = await Promise.all([music.artists(), music.songs()]);
+    const relatedIds = await providerRelatedArtistIds(artists, ids);
+    const requestedIds = new Set([...ids, ...relatedIds]);
+    const requestedNames = new Set(
+      artists.filter((artist) => requestedIds.has(artist.id)).map((artist) => artist.name.toLocaleLowerCase())
+    );
+    const items = songs
+      .filter(
+        (song) =>
+          (song.artistId !== undefined && requestedIds.has(song.artistId)) ||
+          splitValues(song.artist).some((name) => requestedNames.has(name.toLocaleLowerCase()))
+      )
+      .map((song) => songItem(song));
+    if (!items.length) return undefined;
+    items.sort(() => Math.random() - 0.5);
+    const queueId = nextQueueId();
+    return {
+      items,
+      queueId,
+      sourceUri: uri,
+      relatedArtistIds: relatedIds,
+      response: playlistQueueJson(items, queueId, uri, queueId, 'Artist Mix', true)
+    };
+  };
+  const albumMixQueue = async (
+    uri: string
+  ): Promise<{ items: PlexItem[]; queueId: string; response: string; sourceUri: string } | undefined> => {
+    const ids = albumMixIds(uri);
+    if (!ids.length) return undefined;
+    const results = await Promise.all(ids.map((id) => music.album(id)));
+    const items = results.flatMap((result) => result.songs.map((song) => songItem(song, result.album)));
+    if (!items.length) return undefined;
+    items.sort(() => Math.random() - 0.5);
+    const queueId = nextQueueId();
+    return {
+      items,
+      queueId,
+      sourceUri: uri,
+      response: playlistQueueJson(items, queueId, uri, queueId, 'Album Mix', true)
+    };
+  };
   const playback = new Map<string, PlaybackState>();
   const playbackPlayerKey = (request: RouteRequest) =>
     String(
@@ -252,6 +636,14 @@ export function registerLibraryRoutes(
       }
     }
     playback.set(playerKey, current);
+    await onPlaybackState?.({
+      trackId: parsed.id,
+      positionMs: current.maxTimeMs + current.activeMs,
+      durationMs: current.durationMs,
+      state: current.lastState,
+      player: playerKey,
+      startedAt: current.lastSignalMs
+    });
     const activeMs = current.activeMs;
     const reachedScrobbleThreshold = current.maxTimeMs >= current.durationMs * SCROBBLE_THRESHOLD;
     const effectiveProgressMs = current.maxTimeMs + activeMs;
@@ -284,20 +676,95 @@ export function registerLibraryRoutes(
       lastState: 'stopped'
     };
     playback.set(playerKey, current);
-    await scrobblePlayback(playerKey, current, 'plex_scrobble');
+    const durationMs = current.durationMs;
+    if (durationMs <= 0) {
+      try {
+        const song = await music.song(parsed.id);
+        if (song.duration && Number.isFinite(song.duration) && song.duration > 0)
+          current.durationMs = song.duration * 1000;
+      } catch {
+        // The next timeline signal can provide the duration.
+      }
+    }
+    const reachedThreshold = current.durationMs > 0 && current.maxTimeMs >= current.durationMs * SCROBBLE_THRESHOLD;
+    if (reachedThreshold) await scrobblePlayback(playerKey, current, 'plex_scrobble');
+    else {
+      current.lastState = 'playing';
+      await onPlaybackState?.({
+        trackId: parsed.id,
+        positionMs: current.maxTimeMs + current.activeMs,
+        durationMs: current.durationMs,
+        state: current.lastState,
+        player: playerKey,
+        startedAt: current.lastSignalMs
+      });
+      scheduleFallbackTimer(playerKey, current);
+    }
   };
-  const artistListing = async (reply: RouteReply, json = false, firstCharacter?: string) => {
+  const artistListing = async (
+    reply: RouteReply,
+    json = false,
+    firstCharacter?: string,
+    genre?: string,
+    mood?: string,
+    studio?: string
+  ) => {
     try {
       const artists = await music.artists();
-      const filtered = firstCharacter
-        ? artists.filter((artist) =>
-            artist.name.trim().toLocaleUpperCase().startsWith(firstCharacter.toLocaleUpperCase())
-          )
-        : artists;
-      const items = filtered.map(artistItem);
+      const query = (reply.request as RouteRequest).query;
+      const needsPlayCounts =
+        query.sort?.startsWith('viewCount') ||
+        query.sort?.startsWith('lastViewedAt') ||
+        query['viewCount>'] !== undefined ||
+        query['viewCount<'] !== undefined;
+      const playCounts = new Map<string, { count: number; lastPlayedAt?: number }>();
+      if (needsPlayCounts) {
+        const artistsByName = new Map(artists.map((artist) => [artist.name.toLocaleLowerCase(), artist.id]));
+        for (const song of await music.songs()) {
+          const count = song.playCount ?? 0;
+          const creditedIds = new Set<string>();
+          if (song.artistId) creditedIds.add(song.artistId);
+          for (const name of splitValues(song.artist)) {
+            const id = artistsByName.get(name.toLocaleLowerCase());
+            if (id) creditedIds.add(id);
+          }
+          for (const id of creditedIds) {
+            const previous = playCounts.get(id);
+            playCounts.set(id, {
+              count: (previous?.count ?? 0) + count,
+              lastPlayedAt: Math.max(previous?.lastPlayedAt ?? 0, song.lastPlayedAt ?? 0) || undefined
+            });
+          }
+        }
+      }
+      const bucket = genre
+        ? findTagBucket(await genreIndex(), genre)
+        : mood
+          ? findTagBucket(await moodIndex(), mood)
+          : studio
+            ? findTagBucket(await studioIndex(), studio)
+            : undefined;
+      const filtered = playCountFilter(
+        artists.map((artist) => ({
+          artist,
+          playCount: playCounts.get(artist.id)?.count,
+          lastPlayedAt: playCounts.get(artist.id)?.lastPlayedAt
+        })),
+        query,
+        () => undefined,
+        (item) => item.playCount,
+        (item) => item.lastPlayedAt
+      )
+        .filter(
+          ({ artist }) =>
+            ((!genre && !mood && !studio) || bucket?.artistIds.has(artist.id)) &&
+            (!firstCharacter || artist.name.trim().toLocaleUpperCase().startsWith(firstCharacter.toLocaleUpperCase()))
+        )
+        .map(({ artist, playCount, lastPlayedAt }) => ({ ...artist, playCount, lastPlayedAt }));
+      const page = libraryPage(filtered.map(artistItem), (reply.request as RouteRequest).query);
       return json
-        ? reply.type('application/json').send(libraryItemsJson(items, 'artist'))
-        : reply.type(xml('').type).send(libraryItems(items, 'artist'));
+        ? reply.type('application/json').send(libraryItemsJson(page.items, 'artist', page.totalSize, page.offset))
+        : reply.type(xml('').type).send(libraryItems(page.items, 'artist', page.totalSize, page.offset));
     } catch (error) {
       console.warn(
         JSON.stringify({
@@ -309,12 +776,41 @@ export function registerLibraryRoutes(
       return reply.code(503).send('Navidrome is unavailable\n');
     }
   };
-  const albumListing = async (reply: RouteReply, json = false) => {
+  const albumListing = async (
+    reply: RouteReply,
+    json = false,
+    firstCharacter?: string,
+    genre?: string,
+    mood?: string,
+    studio?: string
+  ) => {
     try {
-      const items = (await music.albums()).map((album) => albumItem(album));
+      const albums = await music.albums();
+      const bucket = genre
+        ? findTagBucket(await genreIndex(), genre)
+        : mood
+          ? findTagBucket(await moodIndex(), mood)
+          : studio
+            ? findTagBucket(await studioIndex(), studio)
+            : undefined;
+      const filtered = playCountFilter(
+        albums.filter(
+          (album) =>
+            ((!genre && !mood && !studio) || bucket?.albumIds.has(album.id)) &&
+            (!firstCharacter || album.name.trim().toLocaleUpperCase().startsWith(firstCharacter.toLocaleUpperCase()))
+        ),
+        (reply.request as RouteRequest).query,
+        (album) => album.year,
+        (album) => album.playCount,
+        (album) => album.lastPlayedAt
+      );
+      const page = libraryPage(
+        filtered.map((album) => albumItem(album)),
+        (reply.request as RouteRequest).query
+      );
       return json
-        ? reply.type('application/json').send(libraryItemsJson(items, 'album'))
-        : reply.type(xml('').type).send(libraryItems(items, 'album'));
+        ? reply.type('application/json').send(libraryItemsJson(page.items, 'album', page.totalSize, page.offset))
+        : reply.type(xml('').type).send(libraryItems(page.items, 'album', page.totalSize, page.offset));
     } catch (error) {
       console.warn(
         JSON.stringify({
@@ -326,12 +822,41 @@ export function registerLibraryRoutes(
       return reply.code(503).send('Navidrome is unavailable\n');
     }
   };
-  const trackListing = async (reply: RouteReply, json = false) => {
+  const trackListing = async (
+    reply: RouteReply,
+    json = false,
+    firstCharacter?: string,
+    genre?: string,
+    mood?: string,
+    studio?: string
+  ) => {
     try {
-      const items = (await music.songs()).map((song) => songItem(song));
+      const songs = await music.songs();
+      const bucket = genre
+        ? findTagBucket(await genreIndex(), genre)
+        : mood
+          ? findTagBucket(await moodIndex(), mood)
+          : studio
+            ? findTagBucket(await studioIndex(), studio)
+            : undefined;
+      const filtered = playCountFilter(
+        songs.filter(
+          (song) =>
+            ((!genre && !mood && !studio) || bucket?.songIds.has(song.id)) &&
+            (!firstCharacter || song.title.trim().toLocaleUpperCase().startsWith(firstCharacter.toLocaleUpperCase()))
+        ),
+        (reply.request as RouteRequest).query,
+        (song) => song.year,
+        (song) => song.playCount,
+        (song) => song.lastPlayedAt
+      );
+      const page = libraryPage(
+        filtered.map((song) => songItem(song)),
+        (reply.request as RouteRequest).query
+      );
       return json
-        ? reply.type('application/json').send(libraryItemsJson(items, 'track'))
-        : reply.type(xml('').type).send(libraryItems(items, 'track'));
+        ? reply.type('application/json').send(libraryItemsJson(page.items, 'track', page.totalSize, page.offset))
+        : reply.type(xml('').type).send(libraryItems(page.items, 'track', page.totalSize, page.offset));
     } catch (error) {
       console.warn(
         JSON.stringify({
@@ -345,9 +870,33 @@ export function registerLibraryRoutes(
   };
   app.get('/library/sections/:id/genre', async (request, reply) => {
     if (request.params.id !== '1') return reply.code(404).send('Unknown library section\n');
-    if (!request.headers.accept?.includes('application/json')) return reply.code(406).send('JSON required\n');
     try {
-      return reply.type('application/json').send(genresJson(await music.genres()));
+      const buckets = await genreIndex();
+      const type = String(request.query.type ?? '10');
+      const genres = [...buckets.values()].map((bucket) => ({
+        name: bucket.name,
+        key: bucket.key,
+        songCount: bucket.songIds.size,
+        albumCount: type === '8' ? bucket.artistIds.size : bucket.albumIds.size
+      }));
+      const requestedSize = Number(request.headers['x-plex-container-size'] ?? 500);
+      const requestedOffset = Number(request.headers['x-plex-container-start'] ?? 0);
+      const pageSize = Number.isInteger(requestedSize) && requestedSize > 0 ? Math.min(requestedSize, 500) : 500;
+      const offset = Number.isInteger(requestedOffset) && requestedOffset > 0 ? requestedOffset : 0;
+      const page = genres.slice(offset, offset + pageSize);
+      console.debug(
+        JSON.stringify({
+          event: 'genre_directory',
+          type,
+          genreCount: page.length,
+          totalGenreCount: genres.length,
+          populatedCount: genres.filter((genre) => genre.albumCount > 0).length,
+          firstGenre: genres[0]?.name ?? ''
+        })
+      );
+      return request.headers.accept?.includes('application/json')
+        ? reply.type('application/json').send(genresJson(page, type, genres.length, offset))
+        : reply.type(xml('').type).send(genresXml(page, type, genres.length, offset));
     } catch (error) {
       console.warn(
         JSON.stringify({
@@ -359,10 +908,68 @@ export function registerLibraryRoutes(
       return reply.code(503).send('Navidrome is unavailable\n');
     }
   });
+  app.get('/library/sections/:id/mood', async (request, reply) => {
+    if (request.params.id !== '1') return reply.code(404).send('Unknown library section\n');
+    try {
+      const type = String(request.query.type ?? '9');
+      const buckets = await moodIndex();
+      const moods = [...buckets.values()].map((bucket) => ({
+        name: bucket.name,
+        key: bucket.key,
+        songCount: bucket.songIds.size,
+        albumCount: bucket.albumIds.size
+      }));
+      const requestedSize = Number(request.headers['x-plex-container-size'] ?? 500);
+      const requestedOffset = Number(request.headers['x-plex-container-start'] ?? 0);
+      const pageSize = Number.isInteger(requestedSize) && requestedSize > 0 ? Math.min(requestedSize, 500) : 500;
+      const offset = Number.isInteger(requestedOffset) && requestedOffset > 0 ? requestedOffset : 0;
+      const page = moods.slice(offset, offset + pageSize);
+      return request.headers.accept?.includes('application/json')
+        ? reply.type('application/json').send(genresJson(page, type, moods.length, offset, 'mood'))
+        : reply.type(xml('').type).send(genresXml(page, type, moods.length, offset, 'mood'));
+    } catch (error) {
+      console.warn(
+        JSON.stringify({
+          event: 'music_failed',
+          operation: 'moods',
+          error: error instanceof Error ? error.message : 'unknown error'
+        })
+      );
+      return reply.code(503).send('Navidrome is unavailable\n');
+    }
+  });
+  app.get('/library/sections/:id/studio', async (request, reply) => {
+    if (request.params.id !== '1') return reply.code(404).send('Unknown library section\n');
+    try {
+      const type = String(request.query.type ?? '9');
+      const buckets = await studioIndex();
+      const studios = [...buckets.values()].map((bucket) => ({
+        name: bucket.name,
+        key: bucket.key,
+        songCount: bucket.songIds.size,
+        albumCount: bucket.albumIds.size
+      }));
+      const requestedSize = Number(request.headers['x-plex-container-size'] ?? 500);
+      const requestedOffset = Number(request.headers['x-plex-container-start'] ?? 0);
+      const pageSize = Number.isInteger(requestedSize) && requestedSize > 0 ? Math.min(requestedSize, 500) : 500;
+      const offset = Number.isInteger(requestedOffset) && requestedOffset > 0 ? requestedOffset : 0;
+      const page = studios.slice(offset, offset + pageSize);
+      return request.headers.accept?.includes('application/json')
+        ? reply.type('application/json').send(genresJson(page, type, studios.length, offset, 'studio'))
+        : reply.type(xml('').type).send(genresXml(page, type, studios.length, offset, 'studio'));
+    } catch (error) {
+      console.warn(
+        JSON.stringify({
+          event: 'music_failed',
+          operation: 'record_labels',
+          error: error instanceof Error ? error.message : 'unknown error'
+        })
+      );
+      return reply.code(503).send('Navidrome is unavailable\n');
+    }
+  });
   for (const [filter, title] of [
     ['style', 'By Style'],
-    ['mood', 'By Mood'],
-    ['studio', 'By Studio'],
     ['folder', 'By Folder']
   ] as const) {
     app.get(`/library/sections/:id/${filter}`, async (request, reply) => {
@@ -374,10 +981,32 @@ export function registerLibraryRoutes(
     if (request.params.id !== '1') return reply.code(404).send('Unknown library section\n');
     if (!request.headers.accept?.includes('application/json')) return reply.code(406).send('JSON required\n');
     try {
-      const artists = await music.artists();
-      const counts = new Map();
-      for (const artist of artists) {
-        const character = artist.name.trim().charAt(0).toLocaleUpperCase() || '#';
+      const type = String(request.query.type ?? '8');
+      const genre = genreQuery(request.query);
+      const mood = moodQuery(request.query);
+      const studio = studioQuery(request.query);
+      const bucket = genre
+        ? findTagBucket(await genreIndex(), genre)
+        : mood
+          ? findTagBucket(await moodIndex(), mood)
+          : studio
+            ? findTagBucket(await studioIndex(), studio)
+            : undefined;
+      const names =
+        type === '9'
+          ? (await music.albums())
+              .filter((album) => (!genre && !mood && !studio) || bucket?.albumIds.has(album.id))
+              .map((album) => album.name)
+          : type === '10'
+            ? (await music.songs())
+                .filter((song) => (!genre && !mood && !studio) || bucket?.songIds.has(song.id))
+                .map((song) => song.title)
+            : (await music.artists())
+                .filter((artist) => (!genre && !mood && !studio) || bucket?.artistIds.has(artist.id))
+                .map((artist) => artist.name);
+      const counts = new Map<string, number>();
+      for (const name of names) {
+        const character = name.trim().charAt(0).toLocaleUpperCase() || '#';
         counts.set(character, (counts.get(character) ?? 0) + 1);
       }
       return reply
@@ -398,11 +1027,15 @@ export function registerLibraryRoutes(
   });
   app.get('/library/sections/:id/firstCharacter/:character', async (request, reply) => {
     if (request.params.id !== '1') return reply.code(404).send('Unknown library section\n');
-    return artistListing(
-      reply,
-      request.headers.accept?.includes('application/json'),
-      decodeURIComponent(request.params.character)
-    );
+    const json = request.headers.accept?.includes('application/json');
+    const character = decodeURIComponent(request.params.character);
+    const type = String(request.query.type ?? '8');
+    const genre = genreQuery(request.query);
+    const mood = moodQuery(request.query);
+    const studio = studioQuery(request.query);
+    if (type === '9') return albumListing(reply, json, character, genre, mood, studio);
+    if (type === '10') return trackListing(reply, json, character, genre, mood, studio);
+    return artistListing(reply, json, character, genre, mood, studio);
   });
   const timeline = async (request: RouteRequest, reply: RouteReply) => {
     logPlaybackSignal('plex_timeline', request);
@@ -435,13 +1068,33 @@ export function registerLibraryRoutes(
     const query = request.query;
     if (query.playlistID) {
       try {
-        await loadPlaylistIds();
         const playlistId = decodeURIComponent(query.playlistID);
+        const trackIds = playlistId
+          .split(',')
+          .map((value) => value.trim())
+          .filter((value) => value.startsWith('s-'))
+          .map((value) => value.slice(2))
+          .filter(Boolean);
+        if (trackIds.length > 0 && trackIds.length === playlistId.split(',').length) {
+          const items = (await Promise.all(trackIds.map((id) => music.song(id)))).map((song) => songItem(song));
+          if (!items.length) return reply.code(404).send('Track queue is empty\n');
+          if (query.shuffle === '1') items.sort(() => Math.random() - 0.5);
+          const queueId = nextQueueId();
+          const sourceUri = query.uri ?? `library://plexbridge-music/tracks/${playlistId}`;
+          const response = playlistQueueJson(items, queueId, sourceUri, playlistId, 'Sonic Adventure', false);
+          playQueues.set(queueId, { item: items[0], sourceUri, response });
+          await savePlayQueues();
+          console.debug(
+            JSON.stringify({ event: 'sonic_adventure_queue_response', queueId, trackIds, trackCount: items.length })
+          );
+          return reply.type('application/json').send(response);
+        }
+        await loadPlaylistIds();
         const result = await music.playlist(playlistIds.get(playlistId) ?? playlistId);
         const items = result.songs.map((song) => songItem(song));
         if (!items.length) return reply.code(404).send('Playlist is empty\n');
         if (query.shuffle === '1') items.sort(() => Math.random() - 0.5);
-        const queueId = String(nextPlayQueueId++);
+        const queueId = nextQueueId();
         const sourceUri = query.uri?.startsWith('library://')
           ? query.uri
           : `library://plexbridge-music/playlist/${playlistId}`;
@@ -454,9 +1107,67 @@ export function registerLibraryRoutes(
           query.shuffle === '1'
         );
         playQueues.set(queueId, { item: items[0], sourceUri, response });
+        await savePlayQueues();
         return reply.type('application/json').send(response);
       } catch {
         return reply.code(503).send('Navidrome playlist unavailable\n');
+      }
+    }
+    if (query.uri && artistMixIds(query.uri).length > 0) {
+      try {
+        const mix = await artistMixQueue(query.uri);
+        if (mix) {
+          playQueues.set(mix.queueId, { item: mix.items[0], sourceUri: mix.sourceUri, response: mix.response });
+          await savePlayQueues();
+          console.debug(
+            JSON.stringify({
+              event: 'artist_mix_queue_response',
+              queueId: mix.queueId,
+              artistIds: artistMixIds(query.uri),
+              relatedArtistIds: mix.relatedArtistIds,
+              trackCount: mix.items.length,
+              sourceUri: mix.sourceUri
+            })
+          );
+          return reply.type('application/json').send(mix.response);
+        }
+      } catch (error) {
+        console.warn(
+          JSON.stringify({
+            event: 'music_failed',
+            operation: 'artist_mix_queue',
+            error: error instanceof Error ? error.message : 'unknown error'
+          })
+        );
+        return reply.code(503).send('Navidrome is unavailable\n');
+      }
+    }
+    if (query.uri && albumMixIds(query.uri).length > 0) {
+      try {
+        const mix = await albumMixQueue(query.uri);
+        if (mix) {
+          playQueues.set(mix.queueId, { item: mix.items[0], sourceUri: mix.sourceUri, response: mix.response });
+          await savePlayQueues();
+          console.debug(
+            JSON.stringify({
+              event: 'album_mix_queue_response',
+              queueId: mix.queueId,
+              albumIds: albumMixIds(query.uri),
+              trackCount: mix.items.length,
+              sourceUri: mix.sourceUri
+            })
+          );
+          return reply.type('application/json').send(mix.response);
+        }
+      } catch (error) {
+        console.warn(
+          JSON.stringify({
+            event: 'music_failed',
+            operation: 'album_mix_queue',
+            error: error instanceof Error ? error.message : 'unknown error'
+          })
+        );
+        return reply.code(503).send('Navidrome is unavailable\n');
       }
     }
     const keyValue = query.key ?? query.uri ?? '';
@@ -465,12 +1176,13 @@ export function registerLibraryRoutes(
     const parsed = parseKey(match[1]);
     if (parsed?.kind !== 's') return reply.code(400).send('A track key is required\n');
     try {
-      const queueId = String(nextPlayQueueId++);
+      const queueId = nextQueueId();
       const item = songItem(await music.song(parsed.id));
       const sourceUri = query.uri?.startsWith('library://')
         ? query.uri
         : `library://plexbridge-music/item/${item.key.replace(/^\/+/, '')}`;
       playQueues.set(queueId, { item, sourceUri });
+      await savePlayQueues();
       console.debug(
         JSON.stringify({
           event: 'play_queue_response',
@@ -496,23 +1208,147 @@ export function registerLibraryRoutes(
   });
   app.get('/playQueues/:id', async (request, reply) => {
     const queue = playQueues.get(request.params.id);
-    if (!queue) return reply.code(404).send('Unknown play queue\n');
+    if (!queue) {
+      const sourceUri = clearedPlayQueues.get(request.params.id);
+      if (sourceUri) return reply.type('application/json').send(emptyPlayQueueJson(request.params.id, sourceUri));
+      return reply.code(404).send('Unknown play queue\n');
+    }
     return reply
       .type('application/json')
       .send(queue.response ?? playQueueJson(queue.item, request.params.id, queue.sourceUri));
+  });
+  app.delete('/playQueues/:id/items', async (request, reply) => {
+    const queue = playQueues.get(request.params.id);
+    const sourceUri = queue?.sourceUri ?? `library://plexbridge-music/queue/${request.params.id}`;
+    const clearedResponse = emptyPlayQueueJson(request.params.id, sourceUri);
+    clearedPlayQueues.set(request.params.id, sourceUri);
+    if (queue) {
+      playQueues.delete(request.params.id);
+      await savePlayQueues();
+    }
+    console.debug(JSON.stringify({ event: 'play_queue_cleared', queueId: request.params.id }));
+    return reply.type('application/json').send(clearedResponse);
   });
   app.get('/library/sections/:id/all', async (request, reply) => {
     if (request.params.id !== '1') return reply.code(404).send('Unknown library section\n');
     const type = String(request.query.type ?? '8');
     const json = request.headers.accept?.includes('application/json');
-    if (type === '8') return artistListing(reply, json);
-    if (type === '9') return albumListing(reply, json);
-    if (type === '10') return trackListing(reply, json);
+    const genre = genreQuery(request.query);
+    const mood = moodQuery(request.query);
+    const studio = studioQuery(request.query);
+    if (type === '8') return artistListing(reply, json, undefined, genre, mood, studio);
+    if (type === '9') return albumListing(reply, json, undefined, genre, mood, studio);
+    if (type === '10') return trackListing(reply, json, undefined, genre, mood, studio);
     if (type === '15')
       return json
         ? reply.type('application/json').send(emptyPlaylistSectionJson())
         : reply.code(406).send('JSON required\n');
     return reply.code(400).send('Unsupported library type\n');
+  });
+  app.get('/library/all/top', async (request, reply) => {
+    const type = String(request.query.type ?? '');
+    const clientId = plexClientId(request);
+    if (clientId && (type === '8' || type === '9')) {
+      builderContexts.set(clientId, {
+        type: type === '8' ? 'artist' : 'album',
+        expiresAt: now() + BUILDER_CONTEXT_TTL_MS
+      });
+    }
+    return reply.code(404).send('Top library items are not available\n');
+  });
+  app.get('/library/sections/:id/computePath', async (request, reply) => {
+    if (request.params.id !== '1') return reply.code(404).send('Unknown library section\n');
+    const parseTrackId = (value?: string) => {
+      const parsed = value ? parseKey(value) : undefined;
+      return parsed?.kind === 's' ? parsed.id : undefined;
+    };
+    const startId = parseTrackId(request.query.startID);
+    const endId = parseTrackId(request.query.endID);
+    if (!startId || !endId) return reply.code(400).send('Track startID and endID are required\n');
+    try {
+      const path = music.findSonicPath ? await music.findSonicPath(startId, endId) : [];
+      if (path.length) {
+        console.debug(JSON.stringify({ event: 'sonic_path_response', startId, endId, trackCount: path.length }));
+        return reply.type('application/json').send(
+          libraryItemsJson(
+            path.map((song) => songItem(song)),
+            'track',
+            path.length,
+            0
+          )
+        );
+      }
+    } catch (error) {
+      console.debug(
+        JSON.stringify({
+          event: 'sonic_path_unavailable',
+          startId,
+          endId,
+          error: error instanceof Error ? error.message : 'Navidrome sonic similarity unavailable'
+        })
+      );
+    }
+    return reply.type('application/json').send(libraryItemsJson([], 'track', 0, 0));
+  });
+  app.get('/hubs/search', async (request, reply) => {
+    const query = String(request.query.query ?? '')
+      .trim()
+      .toLocaleLowerCase();
+    if (!query) return reply.type('application/json').send(searchJson([]));
+    try {
+      const limitValue = Number(request.query.limit ?? 11);
+      const limit = Number.isInteger(limitValue) && limitValue > 0 ? Math.min(limitValue, 50) : 11;
+      const artists = await music.artists();
+      const matches = <T extends { name?: string; title?: string }>(items: T[]) =>
+        items.filter((item) => (item.name ?? item.title ?? '').toLocaleLowerCase().includes(query)).slice(0, limit);
+      const matchingArtists = matches(artists);
+      const context = builderContext(request);
+      const sonicAdventureSearch =
+        request.query.type === '10' ||
+        (request.query.includeCollections === '1' && request.query.contentDirectoryID === '1');
+      const matchingTracks = sonicAdventureSearch ? matches(await music.songs()) : [];
+      const matchingAlbums = context === 'artist' ? [] : matches(await music.albums());
+      const hubs = sonicAdventureSearch
+        ? matchingTracks.length
+          ? [{ title: 'Tracks', type: 'track', items: matchingTracks.map((song) => songItem(song)) }]
+          : []
+        : context === 'artist'
+          ? matchingArtists.length
+            ? [{ title: 'Artists', type: 'artist', items: matchingArtists.map(artistItem) }]
+            : []
+          : context === 'album'
+            ? matchingAlbums.length
+              ? [{ title: 'Albums', type: 'album', items: matchingAlbums.map((album) => albumItem(album)) }]
+              : []
+            : matchingArtists.length
+              ? [{ title: 'Artists', type: 'artist', items: matchingArtists.map(artistItem) }]
+              : matchingAlbums.length
+                ? [{ title: 'Albums', type: 'album', items: matchingAlbums.map((album) => albumItem(album)) }]
+                : [];
+      console.debug(
+        JSON.stringify({
+          event: 'search_results',
+          query,
+          artistCount: matchingArtists.length,
+          albumCount: matchingAlbums.length,
+          trackCount: matchingTracks.length,
+          sonicAdventureSearch,
+          builderContext: context ?? 'unknown',
+          artists: matchingArtists.map((artist) => artist.name),
+          returnedHub: hubs[0]?.type ?? 'none'
+        })
+      );
+      return reply.type('application/json').send(searchJson(hubs, query));
+    } catch (error) {
+      console.warn(
+        JSON.stringify({
+          event: 'music_failed',
+          operation: 'search',
+          error: error instanceof Error ? error.message : 'unknown error'
+        })
+      );
+      return reply.code(503).send('Navidrome is unavailable\n');
+    }
   });
   app.get('/library/metadata', async (request, reply) =>
     artistListing(reply, request.headers.accept?.includes('application/json'))
@@ -528,17 +1364,23 @@ export function registerLibraryRoutes(
     if (!parsed) return reply.code(404).send('Unknown metadata key\n');
     try {
       if (parsed.kind === 'a') {
-        const items = (await music.artist(parsed.id)).albums.map((album) => albumItem(album));
+        const page = libraryPage(
+          (await music.artist(parsed.id)).albums.map((album) => albumItem(album)),
+          request.query
+        );
         return json
-          ? reply.type('application/json').send(libraryItemsJson(items, 'album'))
-          : reply.type(xml('').type).send(libraryItems(items, 'album'));
+          ? reply.type('application/json').send(libraryItemsJson(page.items, 'album', page.totalSize, page.offset))
+          : reply.type(xml('').type).send(libraryItems(page.items, 'album', page.totalSize, page.offset));
       }
       if (parsed.kind === 'l') {
         const result = await music.album(parsed.id);
-        const items = result.songs.map((song) => songItem(song, result.album));
+        const page = libraryPage(
+          result.songs.map((song) => songItem(song, result.album)),
+          request.query
+        );
         return json
-          ? reply.type('application/json').send(libraryItemsJson(items, 'track'))
-          : reply.type(xml('').type).send(libraryItems(items, 'track'));
+          ? reply.type('application/json').send(libraryItemsJson(page.items, 'track', page.totalSize, page.offset))
+          : reply.type(xml('').type).send(libraryItems(page.items, 'track', page.totalSize, page.offset));
       }
       return reply.code(404).send('Tracks do not have children\n');
     } catch (error) {
@@ -552,8 +1394,65 @@ export function registerLibraryRoutes(
       return reply.code(503).send('Navidrome is unavailable\n');
     }
   });
+  const relatedArtists = async (request: RouteRequest, reply: RouteReply) => {
+    const parsed = parseKey(request.params.id);
+    if (parsed?.kind === 'l') {
+      return request.headers.accept?.includes('application/json')
+        ? reply.type('application/json').send(libraryItemsJson([], 'album', 0, 0))
+        : reply.type(xml('').type).send(libraryItems([], 'album', 0, 0));
+    }
+    if (parsed?.kind !== 'a') return reply.code(404).send('Unknown artist\n');
+    try {
+      const artists = await music.artists();
+      const limitValue = Number(request.query.limit ?? 12);
+      const limit = Number.isInteger(limitValue) && limitValue > 0 ? Math.min(limitValue, 50) : 12;
+      const providerIds = await providerRelatedArtistIds(artists, [parsed.id]);
+      const ids = providerIds.slice(0, limit);
+      const items = ids
+        .map((id) => artists.find((artist) => artist.id === id))
+        .filter((artist): artist is (typeof artists)[number] => artist !== undefined)
+        .map(artistItem);
+      return request.headers.accept?.includes('application/json')
+        ? reply.type('application/json').send(libraryItemsJson(items, 'artist', items.length, 0))
+        : reply.type(xml('').type).send(libraryItems(items, 'artist', items.length, 0));
+    } catch (error) {
+      console.warn(
+        JSON.stringify({
+          event: 'music_failed',
+          operation: 'related_artists',
+          error: error instanceof Error ? error.message : 'unknown error'
+        })
+      );
+      return reply.code(503).send('Navidrome is unavailable\n');
+    }
+  };
+  app.get('/library/metadata/:id/nearest', relatedArtists);
+  app.get('/library/metadata/:id/similar', relatedArtists);
   app.get('/library/metadata/:id', async (request, reply) => {
     const json = request.headers.accept?.includes('application/json');
+    const combinedArtists = request.params.id
+      .split(',')
+      .map((value) => parseKey(value))
+      .filter((value): value is { kind: 'a'; id: string } => value?.kind === 'a');
+    if (combinedArtists.length > 1 && combinedArtists.length === request.params.id.split(',').length) {
+      try {
+        const items = (await Promise.all(combinedArtists.map((artist) => music.artist(artist.id)))).map((result) =>
+          artistItem(result.artist)
+        );
+        return json
+          ? reply.type('application/json').send(libraryItemsJson(items, 'artist'))
+          : reply.type(xml('').type).send(libraryItems(items, 'artist'));
+      } catch (error) {
+        console.warn(
+          JSON.stringify({
+            event: 'music_failed',
+            operation: 'combined_artist_metadata',
+            error: error instanceof Error ? error.message : 'unknown error'
+          })
+        );
+        return reply.code(503).send('Navidrome is unavailable\n');
+      }
+    }
     const parsed = parseKey(request.params.id);
     if (!parsed) return reply.code(404).send('Unknown metadata key\n');
     try {
@@ -784,4 +1683,12 @@ export function registerLibraryRoutes(
       return reply.code(502).send('Navidrome artwork unavailable\n');
     }
   });
+  return {
+    invalidateLibraryCaches: () => {
+      genreIndexCache = undefined;
+      moodIndexCache = undefined;
+      genreIdsCache = undefined;
+      moodIdsCache = undefined;
+    }
+  };
 }

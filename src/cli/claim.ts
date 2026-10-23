@@ -25,9 +25,12 @@ await ensurePlexCertificate(identity, settings.configDir, serverToken);
 const registration = await publishServer(
   identity,
   settings.serverName,
-  await plexDirectUrl(settings.configDir, settings.publicUrl),
+  await plexDirectUrl(settings.configDir, settings.publicUrl, settings.publicPort),
   serverToken,
-  credentials.authToken
+  credentials.authToken,
+  undefined,
+  undefined,
+  settings.port
 );
 console.log(
   JSON.stringify({ claimExchangeHttpStatus: 200, serverTokenReceived: Boolean(serverToken), ...registration }, null, 2)
