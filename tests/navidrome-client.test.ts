@@ -83,6 +83,14 @@ test('albums and songs preserve Navidrome play counts and last-played dates', as
   assert.equal(song?.lastPlayedAt, 1792544523);
 });
 
+test('songs preserve Navidrome OpenSubsonic moods', async () => {
+  const client = new NavidromeClient(settings, async () =>
+    response({ searchResult3: { song: [{ id: 'song-1', title: 'Song 1', moods: ['Energetic', 'Driving'] }] } })
+  );
+
+  assert.equal((await client.songs())[0]?.mood, 'Energetic, Driving');
+});
+
 test('songs use deterministic paginated search instead of the 500-song random limit', async () => {
   const requests: URL[] = [];
   const client = new NavidromeClient(settings, async (input) => {

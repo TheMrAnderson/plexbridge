@@ -88,6 +88,16 @@ const FALLBACK_THRESHOLD = 1.1;
 const MAX_LIBRARY_PAGE_SIZE = 500;
 const BUILDER_CONTEXT_TTL_MS = 45_000;
 
+function transcodeTarget(request: RouteRequest): { format: string; container: string; audioCodec: string } {
+  const profile = String(
+    request.query['X-Plex-Client-Profile-Extra'] ?? request.headers['x-plex-client-profile-extra'] ?? ''
+  );
+  const container = /container=([^&)]+)/.exec(profile)?.[1]?.toLowerCase();
+  const audioCodec = /audioCodec=([^&)]+)/.exec(profile)?.[1]?.toLowerCase();
+  if (container === 'ogg' && audioCodec === 'opus') return { format: 'opus', container: 'ogg', audioCodec: 'opus' };
+  return { format: 'mp3', container: 'mp3', audioCodec: 'mp3' };
+}
+
 function libraryPage<T>(
   items: T[],
   query: Record<string, string | undefined>
@@ -1498,6 +1508,20 @@ export function registerLibraryRoutes(
           : await music.streamUrl(parsed.id, { format: 'mp3' });
       const range = request.headers.range;
       const response = await fetch(streamUrl, range ? { headers: { range } } : undefined);
+      console.debug(
+        JSON.stringify({
+          event: 'navidrome_stream_response',
+          trackId: parsed.id,
+          endpoint: 'library_stream',
+          requestRange: range ?? '',
+          status: response.status,
+          contentType: response.headers.get('content-type') ?? '',
+          contentLength: response.headers.get('content-length') ?? '',
+          contentRange: response.headers.get('content-range') ?? '',
+          acceptRanges: response.headers.get('accept-ranges') ?? '',
+          hasBody: Boolean(response.body)
+        })
+      );
       if (!response.ok || !response.body) return reply.code(502).send('Navidrome stream unavailable\n');
       if (response.status === 206) reply.code(206);
       reply.header('content-type', response.headers.get('content-type') ?? 'audio/mpeg');
@@ -1508,7 +1532,16 @@ export function registerLibraryRoutes(
       if (response.headers.get('content-length'))
         reply.header('content-length', response.headers.get('content-length'));
       return reply.send(Readable.fromWeb(response.body as unknown as ReadableStream));
-    } catch {
+    } catch (error) {
+      console.warn(
+        JSON.stringify({
+          event: 'navidrome_stream_failed',
+          trackId: parsed.id,
+          endpoint: 'library_stream',
+          requestRange: request.headers.range ?? '',
+          error: error instanceof Error ? error.message : 'unknown error'
+        })
+      );
       return reply.code(502).send('Navidrome stream unavailable\n');
     }
   });
@@ -1521,17 +1554,25 @@ export function registerLibraryRoutes(
       const sourceFormat = (source.suffix ?? source.contentType?.split('/')[1] ?? 'mp3').toLowerCase();
       const item = songItem(source);
       const directPlayRequested = request.query.directPlay !== '0';
-      const directPlayable = preserveSourceFormats && directPlayableFormats.has(sourceFormat);
+      const sourceDirectPlayable = preserveSourceFormats && directPlayableFormats.has(sourceFormat);
+      const directPlayable = directPlayRequested && sourceDirectPlayable;
+      const target = directPlayable
+        ? { format: sourceFormat, container: sourceFormat, audioCodec: sourceFormat }
+        : transcodeTarget(request);
       console.debug(
         JSON.stringify({
           event: 'audio_decision',
           sourceFormat,
           directPlayRequested,
-          directPlayOverridden: directPlayable && !directPlayRequested,
           directPlayable,
+          directPlayOverridden: sourceDirectPlayable && !directPlayRequested,
           preserveSourceFormats,
           musicBitrate: request.query.musicBitrate ?? '',
-          clientProfile: request.headers['x-plex-client-profile-extra'] ?? ''
+          outputFormat: target.format,
+          outputContainer: target.container,
+          outputAudioCodec: target.audioCodec,
+          clientProfile:
+            request.query['X-Plex-Client-Profile-Extra'] ?? request.headers['x-plex-client-profile-extra'] ?? ''
         })
       );
       const metadata = JSON.parse(libraryItemsJson([item], 'track')).MediaContainer.Metadata[0] as Record<
@@ -1540,11 +1581,11 @@ export function registerLibraryRoutes(
       >;
       if (Array.isArray(metadata.Media)) {
         const media = metadata.Media[0] as Record<string, unknown>;
-        media.container = directPlayable ? sourceFormat : 'mp3';
-        media.audioCodec = directPlayable ? media.audioCodec : 'mp3';
+        media.container = target.container;
+        media.audioCodec = directPlayable ? media.audioCodec : target.audioCodec;
         const part = Array.isArray(media.Part) ? (media.Part[0] as Record<string, unknown>) : undefined;
         if (part) {
-          part.container = directPlayable ? sourceFormat : 'mp3';
+          part.container = target.container;
           part.decision = directPlayable ? 'directplay' : 'transcode';
           part.selected = true;
         }
@@ -1583,24 +1624,45 @@ export function registerLibraryRoutes(
     try {
       const source = await music.song(parsed.id);
       const sourceFormat = (source.suffix ?? source.contentType?.split('/')[1] ?? 'mp3').toLowerCase();
-      const canDirectPlay = preserveSourceFormats && directPlayableFormats.has(sourceFormat);
+      const sourceDirectPlayable = preserveSourceFormats && directPlayableFormats.has(sourceFormat);
+      const canDirectPlay = directPlay && sourceDirectPlayable;
+      const target = canDirectPlay
+        ? { format: sourceFormat, container: sourceFormat, audioCodec: sourceFormat }
+        : transcodeTarget(request);
       console.debug(
         JSON.stringify({
           event: 'audio_stream',
           sourceFormat,
           directPlayRequested: directPlay,
-          directPlayOverridden: canDirectPlay && !directPlay,
+          directPlayOverridden: sourceDirectPlayable && !directPlay,
           canDirectPlay,
           preserveSourceFormats,
-          outputFormat: canDirectPlay ? sourceFormat : 'mp3',
+          outputFormat: target.format,
+          outputContainer: target.container,
+          outputAudioCodec: target.audioCodec,
           musicBitrate: query.musicBitrate ?? '',
           range: request.headers.range ?? '',
-          clientProfile: request.headers['x-plex-client-profile-extra'] ?? ''
+          clientProfile:
+            request.query['X-Plex-Client-Profile-Extra'] ?? request.headers['x-plex-client-profile-extra'] ?? ''
         })
       );
-      const streamUrl = await music.streamUrl(parsed.id, canDirectPlay ? {} : { format: 'mp3', maxBitRate });
+      const streamUrl = await music.streamUrl(parsed.id, canDirectPlay ? {} : { format: target.format, maxBitRate });
       const range = request.headers.range;
       const response = await fetch(streamUrl, range ? { headers: { range } } : undefined);
+      console.debug(
+        JSON.stringify({
+          event: 'navidrome_stream_response',
+          trackId: parsed.id,
+          endpoint: 'universal_start',
+          requestRange: range ?? '',
+          status: response.status,
+          contentType: response.headers.get('content-type') ?? '',
+          contentLength: response.headers.get('content-length') ?? '',
+          contentRange: response.headers.get('content-range') ?? '',
+          acceptRanges: response.headers.get('accept-ranges') ?? '',
+          hasBody: Boolean(response.body)
+        })
+      );
       if (!response.ok || !response.body) return reply.code(502).send('Navidrome stream unavailable\n');
       if (response.status === 206) reply.code(206);
       reply.header('content-type', response.headers.get('content-type') ?? 'audio/mpeg');
@@ -1611,7 +1673,16 @@ export function registerLibraryRoutes(
       if (response.headers.get('content-length'))
         reply.header('content-length', response.headers.get('content-length'));
       return reply.send(Readable.fromWeb(response.body as unknown as ReadableStream));
-    } catch {
+    } catch (error) {
+      console.warn(
+        JSON.stringify({
+          event: 'navidrome_stream_failed',
+          trackId: parsed.id,
+          endpoint: 'universal_start',
+          requestRange: request.headers.range ?? '',
+          error: error instanceof Error ? error.message : 'unknown error'
+        })
+      );
       return reply.code(502).send('Navidrome stream unavailable\n');
     }
   });

@@ -26,6 +26,7 @@ interface NavidromeItem {
   albumId?: string | number;
   genre?: string;
   mood?: string;
+  moods?: string[];
   comment?: string;
   songCount?: string | number;
   albumCount?: string | number;
@@ -345,7 +346,7 @@ export class NavidromeClient implements MusicProvider {
       artist: value.artist,
       artistId: value.artistId ? String(value.artistId) : undefined,
       genre: value.genre,
-      mood: value.mood,
+      mood: value.moods?.filter(Boolean).join(', ') || value.mood,
       track: value.track ? Number(value.track) : undefined,
       year: value.year ? Number(value.year) : undefined,
       duration: value.duration ? Number(value.duration) : undefined,
