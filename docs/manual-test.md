@@ -29,6 +29,8 @@ For Best Of, request `/library/sections/1/all?type=9&year=<year>&viewCount%3E=1&
 
 For Sonic Adventure, search from the Sonic Adventure screen and confirm `/hubs/search` returns a `Tracks` hub. Select two tracks and confirm `/library/sections/1/computePath` is requested. Without an AudioMuse-AI/Navidrome sonic-similarity plugin, PlexBridge should still return a playable two-track queue. With the plugin installed and analyzed, the path should contain the returned intermediate tracks.
 
+For loudness leveling, confirm Navidrome exposes OpenSubsonic `replayGain` values on songs, then inspect a PlexBridge track or play-queue response. The selected audio `Stream` should contain `albumGain`, `albumPeak`, `gain`, and `peak` when available. In Plexamp, enable loudness leveling and compare shuffled tracks with materially different source levels.
+
 # Record labels
 
 After a full sync, request `/library/sections/1/studio?type=9` and confirm the response contains album record labels. Select a label and verify Plexamp follows its numeric key to albums through `/library/sections/1/all?type=9&studio=<key>`. The sync writes the label list to `/config/navidrome-record-labels.json` and the Plex key mapping to `/config/plex-studio-ids.json`.

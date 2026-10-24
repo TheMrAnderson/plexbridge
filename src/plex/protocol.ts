@@ -438,7 +438,13 @@ export function playQueueJson(item: PlexItem, queueId: string, sourceUri: string
             duration: (item.media.duration ?? item.duration ?? 0) * 1000,
             size: item.media.size ?? 0,
             protocol: 'http',
-            container: item.media.container ?? 'mp3'
+            container: item.media.container ?? 'mp3',
+            ...(item.media.replayGain
+              ? (() => {
+                  const stream = replayGainStream(item.media.replayGain);
+                  return stream ? { Stream: [stream] } : {};
+                })()
+              : {})
           }
         ]
       }
@@ -543,7 +549,13 @@ export function playlistQueueJson(
               duration: (item.media.duration ?? item.duration ?? 0) * 1000,
               size: item.media.size ?? 0,
               protocol: 'http',
-              container: item.media.container ?? 'mp3'
+              container: item.media.container ?? 'mp3',
+              ...(item.media.replayGain
+                ? (() => {
+                    const stream = replayGainStream(item.media.replayGain);
+                    return stream ? { Stream: [stream] } : {};
+                  })()
+                : {})
             }
           ]
         }
@@ -862,6 +874,28 @@ export interface PlexItem {
     container?: string;
     audioCodec?: string;
     bitrate?: number;
+    replayGain?: {
+      trackGain?: number;
+      albumGain?: number;
+      trackPeak?: number;
+      albumPeak?: number;
+    };
+  };
+}
+
+function replayGainStream(replayGain: NonNullable<NonNullable<PlexItem['media']>['replayGain']>) {
+  const albumGain = replayGain.trackGain ?? replayGain.albumGain;
+  const albumPeak = replayGain.trackPeak ?? replayGain.albumPeak;
+  const gain = replayGain.trackGain ?? albumGain;
+  const peak = replayGain.trackPeak ?? albumPeak;
+  if (albumGain === undefined && albumPeak === undefined && gain === undefined && peak === undefined) return undefined;
+  return {
+    streamType: 2,
+    selected: 1,
+    ...(gain === undefined ? {} : { gain }),
+    ...(albumGain === undefined ? {} : { albumGain }),
+    ...(peak === undefined ? {} : { peak }),
+    ...(albumPeak === undefined ? {} : { albumPeak })
   };
 }
 
@@ -893,8 +927,12 @@ export function libraryItems(
     if (item.lastViewedAt !== undefined) attrs.push(`lastViewedAt="${item.lastViewedAt}"`);
     if (item.duration !== undefined) attrs.push(`duration="${item.duration * 1000}"`);
     if (item.type !== 'track') return `<Directory ${attrs.join(' ')}/>`;
+    const gain = item.media?.replayGain ? replayGainStream(item.media.replayGain) : undefined;
+    const stream = gain
+      ? `<Stream streamType="2" selected="1"${gain.gain === undefined ? '' : ` gain="${gain.gain}"`}${gain.albumGain === undefined ? '' : ` albumGain="${gain.albumGain}"`}${gain.peak === undefined ? '' : ` peak="${gain.peak}"`}${gain.albumPeak === undefined ? '' : ` albumPeak="${gain.albumPeak}"`}/>`
+      : '';
     const media = item.media
-      ? `<Media duration="${(item.media.duration ?? item.duration ?? 0) * 1000}" container="${xmlEscape(item.media.container ?? 'mp3')}" audioCodec="${xmlEscape(item.media.audioCodec ?? 'mp3')}" bitrate="${item.media.bitrate ?? 0}"><Part key="${xmlEscape(item.media.partKey)}" duration="${(item.media.duration ?? item.duration ?? 0) * 1000}" size="${item.media.size ?? 0}"/></Media>`
+      ? `<Media duration="${(item.media.duration ?? item.duration ?? 0) * 1000}" container="${xmlEscape(item.media.container ?? 'mp3')}" audioCodec="${xmlEscape(item.media.audioCodec ?? 'mp3')}" bitrate="${item.media.bitrate ?? 0}"><Part key="${xmlEscape(item.media.partKey)}" duration="${(item.media.duration ?? item.duration ?? 0) * 1000}" size="${item.media.size ?? 0}">${stream}</Part></Media>`
       : '';
     return `<Track ${attrs.join(' ')}>${media}</Track>`;
   });
@@ -969,7 +1007,13 @@ export function libraryItemsJson(
               duration: (item.media.duration ?? item.duration ?? 0) * 1000,
               size: item.media.size ?? 0,
               protocol: 'http',
-              container: item.media.container ?? 'mp3'
+              container: item.media.container ?? 'mp3',
+              ...(item.media.replayGain
+                ? (() => {
+                    const stream = replayGainStream(item.media.replayGain);
+                    return stream ? { Stream: [stream] } : {};
+                  })()
+                : {})
             }
           ]
         }

@@ -64,6 +64,8 @@ Plexamp requests Record Labels through `/library/sections/1/studio?type=9`. Plex
 
 Plexamp's Best Of views request album or track listings with a year, `viewCount>`, and `sort=viewCount:desc`. PlexBridge passes Navidrome's durable per-user `playCount` and `played` values through as Plex `viewCount` and `lastViewedAt`, and supports those filters for albums and tracks. Artist play counts are aggregated from credited songs, including multi-artist credits. This uses Navidrome's long-running counters; PlexBridge's own recent play history remains limited and is not used for Best Of reporting.
 
+OpenSubsonic ReplayGain values are translated into the audio stream metadata Plexamp expects: `albumGain`/`albumPeak` use track values first, with album values as fallback, so shuffled playback gets track-level normalization; `gain`/`peak` follow the same preference. The fields are included in library, metadata, search, and play-queue responses. This provides Plexamp's existing loudness leveling with ReplayGain data without pretending to provide Plex's separate LUFS analysis fields. Tracks without ReplayGain metadata omit the translated fields.
+
 ## Experiment record
 
 Record each manual attempt in `docs/experiments/` with date, client version, sanitized request/response details, and outcome. Never include `X-Plex-Token`, claim tokens, credentials, authorization headers, or raw sensitive payloads.

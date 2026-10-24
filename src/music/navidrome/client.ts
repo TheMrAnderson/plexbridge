@@ -44,6 +44,12 @@ interface NavidromeItem {
   size?: string | number;
   playCount?: string | number;
   played?: string | number;
+  replayGain?: {
+    trackGain?: string | number;
+    albumGain?: string | number;
+    trackPeak?: string | number;
+    albumPeak?: string | number;
+  };
 }
 
 interface NavidromeResponse {
@@ -338,6 +344,13 @@ export class NavidromeClient implements MusicProvider {
     };
   }
   private normalizeSong(value: NavidromeItem): MusicSong {
+    const replayGain = value.replayGain
+      ? Object.fromEntries(
+          Object.entries(value.replayGain)
+            .map(([key, gain]) => [key, gain === undefined ? undefined : Number(gain)])
+            .filter(([, gain]) => gain !== undefined && Number.isFinite(gain))
+        )
+      : undefined;
     return {
       id: String(value.id),
       title: value.title ?? 'Unknown Track',
@@ -356,7 +369,8 @@ export class NavidromeClient implements MusicProvider {
       bitRate: value.bitRate ? Number(value.bitRate) : undefined,
       size: value.size ? Number(value.size) : undefined,
       playCount: value.playCount !== undefined ? Number(value.playCount) : undefined,
-      lastPlayedAt: parsePlayedAt(value.played)
+      lastPlayedAt: parsePlayedAt(value.played),
+      replayGain: replayGain && Object.keys(replayGain).length ? replayGain : undefined
     };
   }
 }

@@ -949,7 +949,13 @@ test('track metadata advertises PMS-compatible artwork in queues and library res
     title: 'Demo',
     thumb: '/library/metadata/l-album/thumb',
     art: '/library/metadata/l-album/art',
-    media: { partKey: '/library/metadata/s-demo/stream', duration: 120, container: 'mp3', audioCodec: 'mp3' }
+    media: {
+      partKey: '/library/metadata/s-demo/stream',
+      duration: 120,
+      container: 'mp3',
+      audioCodec: 'mp3',
+      replayGain: { trackGain: -8.25, albumGain: -7.5, trackPeak: 0.98, albumPeak: 0.99 }
+    }
   };
   const queueMetadata = JSON.parse(playQueueJson(item, '1', 'library://plexbridge-music/item//library/metadata/s-demo'))
     .MediaContainer.Metadata[0];
@@ -961,6 +967,14 @@ test('track metadata advertises PMS-compatible artwork in queues and library res
       { alt: 'Demo', type: 'coverPoster', url: item.thumb },
       { alt: 'Demo', type: 'background', url: item.art }
     ]);
+    assert.deepEqual(metadata.Media[0].Part[0].Stream[0], {
+      streamType: 2,
+      selected: 1,
+      gain: -8.25,
+      albumGain: -8.25,
+      peak: 0.98,
+      albumPeak: 0.98
+    });
   }
 });
 

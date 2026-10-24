@@ -103,7 +103,8 @@ export function songItem(song: MusicSong, album?: MusicAlbum): PlexItem {
       size: song.size,
       container: playable ? sourceFormat : 'mp3',
       audioCodec: playable ? plexAudioCodec(sourceFormat, song.contentType) : 'mp3',
-      bitrate: song.bitRate
+      bitrate: song.bitRate,
+      replayGain: song.replayGain
     }
   };
 }

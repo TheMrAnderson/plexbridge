@@ -35,6 +35,12 @@ export interface MusicSong {
   size?: number;
   playCount?: number;
   lastPlayedAt?: number;
+  replayGain?: {
+    trackGain?: number;
+    albumGain?: number;
+    trackPeak?: number;
+    albumPeak?: number;
+  };
 }
 export interface MusicGenre {
   name: string;
