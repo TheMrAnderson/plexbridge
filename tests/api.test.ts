@@ -141,7 +141,7 @@ test('library listings expose full totals and return Plexamp-sized pages', async
     get: (_target, property) => {
       if (property === 'artists')
         return async () =>
-          Array.from({ length: 501 }, (_, index) => ({ id: `artist-${index}`, name: `Artist ${index}` }));
+          Array.from({ length: 501 }, (_, index) => ({ id: `artist-${index}`, name: `Artist ${index}` })).reverse();
       if (property === 'albums')
         return async () =>
           Array.from({ length: 501 }, (_, index) => ({ id: `album-${index}`, name: `Album ${index}` }));
@@ -173,6 +173,21 @@ test('library listings expose full totals and return Plexamp-sized pages', async
       assert.equal(container.totalSize, 501, url);
       assert.equal(container.offset, 500, url);
     }
+
+    const headerPage = await app.inject({
+      method: 'GET',
+      url: '/library/sections/1/all?type=8&sort=titleSort',
+      headers: {
+        accept: 'application/json',
+        'x-plex-container-size': '1',
+        'x-plex-container-start': '500'
+      }
+    });
+    const headerPageContainer = JSON.parse(headerPage.body).MediaContainer;
+    assert.equal(headerPageContainer.size, 1);
+    assert.equal(headerPageContainer.totalSize, 501);
+    assert.equal(headerPageContainer.offset, 500);
+    assert.equal(headerPageContainer.Metadata[0].ratingKey, 'a-artist-500');
 
     const albumCharacters = await app.inject({
       method: 'GET',
@@ -394,10 +409,20 @@ test('artist mix queues include tracks credited to each selected artist', async 
   }) as MusicProvider;
 
   await withApp(async (app) => {
+    const builderStart = await app.inject({
+      method: 'GET',
+      url: '/library/all/top?type=8&librarySectionID=1&limit=12',
+      headers: {
+        accept: 'application/json',
+        'x-plex-client-identifier': 'artist-mix-test'
+      }
+    });
+    assert.equal(builderStart.statusCode, 200);
+    assert.equal(JSON.parse(builderStart.body).MediaContainer.Metadata[0].type, 'artist');
     const search = await app.inject({
       method: 'GET',
-      url: '/hubs/search?query=chesney',
-      headers: { accept: 'application/json' }
+      url: '/hubs/search?query=chesney&includeCollections=1&contentDirectoryID=1',
+      headers: { accept: 'application/json', 'x-plex-client-identifier': 'artist-mix-test' }
     });
     assert.equal(search.statusCode, 200);
     const searchHub = JSON.parse(search.body).MediaContainer.Hub[0];

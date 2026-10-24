@@ -28,6 +28,16 @@ Successful provider scrobbles are logged as `music_scrobbled` and are written to
 
 If Plexamp resumes a paused, already-buffered track without sending a timeline, rate, or stream request, PlexBridge receives no new playback signal. It cannot reliably distinguish resumed listening from a track that remains paused, so it does not invent a scrobble for that silent transition.
 
+## Verified Plexamp mobile and desktop differences
+
+Plexamp clients do not use identical request sequences even when they expose the same feature. The observations below are from Plexamp Android 4.12.4 (`TREBLE/2.1`) and should not be assumed to describe the desktop client:
+
+- Mobile Artist Mix Builder first requests `/library/all/top?type=8`; Album Mix Builder uses `type=9`. It then searches through `/hubs/search` without a type parameter, while also sending `includeCollections=1&contentDirectoryID=1`. PlexBridge uses the preceding, client-scoped `/library/all/top` request to distinguish Artist Mix Builder from Album Mix Builder. An active builder context takes precedence over the otherwise Sonic Adventure-like search flags.
+- Mobile artist browsing requests `/library/sections/1/all?type=8&sort=titleSort` and pages with `X-Plex-Container-Start` and `X-Plex-Container-Size` headers. Its quick letter navigation is offset-based in this flow; it does not call `/library/sections/1/firstCharacter` in the observed trace. PlexBridge sorts by title before applying those offsets.
+- Sonic Adventure uses the same collection/search flags when no builder context is active, returns a track hub, and then calls `/library/sections/1/computePath`.
+
+When validating a Plex feature, capture the client product, platform, version, request headers, and request order. A desktop success does not establish mobile compatibility, and a mobile success does not establish that a desktop client uses the same endpoint or pagination behavior.
+
 ## Not established yet
 
 Plex's public documentation does not establish that an independently implemented server can complete the official server claim, account resource registration, connection advertisement, or Plexamp trust flow. The claim token exchange and the server appearing in an authenticated account's resources must be tested independently. This project therefore does not send claim tokens anywhere yet and does not claim registration success.

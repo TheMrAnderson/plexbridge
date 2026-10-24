@@ -1,6 +1,6 @@
 {
   "name": "plexbridge",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "license": "AGPL-3.0-only",
   "description": "A Plex-compatible music bridge for provider-backed libraries",
   "private": true,

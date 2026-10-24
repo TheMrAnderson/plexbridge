@@ -7,6 +7,8 @@
 5. Confirm whether Plexamp requests `/`, `/identity`, `/library/sections`, or additional endpoints. Unsupported paths should remain visible as 404 diagnostics.
 6. Record the outcome in an experiment note. Do not attempt claim or registration requests until the relevant protocol is documented and the user explicitly authorizes a real-account test.
 
+For Plexamp client comparisons, record the product, platform, version, request order, and relevant `X-Plex-*` headers separately. Do not infer mobile behavior from a desktop test.
+
 For the emulated server-side claim experiment, obtain a fresh short-lived claim token and send it to `POST /myplex/claim?token=...` while PlexBridge is running. The endpoint performs the cloud exchange without requiring a real Plex Media Server. Verify `/identity` reports `claimed="1"`, then verify the server appears in Plex account resources.
 
 Success requires Plexamp to connect and request the synthetic library. A running container, a valid XML response, or a claim-token response alone is not success.
@@ -14,6 +16,8 @@ Success requires Plexamp to connect and request the synthetic library. A running
 # Mix builders
 
 Plexamp's Artist Mix Builder and Album Mix Builder share the same search request, so the builder must be entered from the appropriate Plexamp screen before searching. Artist Mix Builder searches artists; Album Mix Builder searches albums. Plexamp signals the active builder with a preceding `/library/all/top` request: `type=8` for artists and `type=9` for albums. PlexBridge remembers that context for 45 seconds per Plex client.
+
+On the observed Android Plexamp 4.12.4 flow, `/hubs/search` also includes `includeCollections=1&contentDirectoryID=1`. Those flags indicate Sonic Adventure only when no active Artist or Album Mix Builder context exists. Artist browsing uses `/library/sections/1/all?type=8&sort=titleSort` with `X-Plex-Container-Start` and `X-Plex-Container-Size` headers; verify that offset pages are alphabetical. This mobile flow uses offset paging for quick letter navigation rather than the `firstCharacter` endpoint.
 
 Artist mixes may expand through related artists when Navidrome's related-artist provider is available. Album mixes currently use only the albums selected by the user because similar-album data is not available.
 

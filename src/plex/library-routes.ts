@@ -100,16 +100,35 @@ function transcodeTarget(request: RouteRequest): { format: string; container: st
 
 function libraryPage<T>(
   items: T[],
-  query: Record<string, string | undefined>
+  query: Record<string, string | undefined>,
+  headers?: Record<string, string | string[] | undefined>
 ): { items: T[]; totalSize: number; offset: number } {
-  const parsedOffset = Number(query.offset ?? 0);
-  const parsedSize = Number(query.size ?? query.limit ?? MAX_LIBRARY_PAGE_SIZE);
+  const headerValue = (name: string) => {
+    const value = headers?.[name];
+    return Array.isArray(value) ? value[0] : value;
+  };
+  const parsedOffset = Number(headerValue('x-plex-container-start') ?? query.offset ?? 0);
+  const parsedSize = Number(headerValue('x-plex-container-size') ?? query.size ?? query.limit ?? MAX_LIBRARY_PAGE_SIZE);
   const offset = Number.isInteger(parsedOffset) && parsedOffset > 0 ? parsedOffset : 0;
   const size =
     Number.isInteger(parsedSize) && parsedSize > 0
       ? Math.min(parsedSize, MAX_LIBRARY_PAGE_SIZE)
       : MAX_LIBRARY_PAGE_SIZE;
   return { items: items.slice(offset, offset + size), totalSize: items.length, offset };
+}
+
+function sortByTitle<T>(items: T[], query: Record<string, string | undefined>, getTitle: (item: T) => string): T[] {
+  const [field, direction = 'asc'] = (query.sort?.split(',')[0] ?? '').split(':');
+  if (field !== 'titleSort') return items;
+  const multiplier = direction.toLowerCase() === 'desc' ? -1 : 1;
+  return items
+    .map((item, index) => ({ item, index }))
+    .sort(
+      (left, right) =>
+        getTitle(left.item).localeCompare(getTitle(right.item), undefined, { numeric: true, sensitivity: 'base' }) *
+          multiplier || left.index - right.index
+    )
+    .map(({ item }) => item);
 }
 
 function playCountFilter<T>(
@@ -771,7 +790,11 @@ export function registerLibraryRoutes(
             (!firstCharacter || artist.name.trim().toLocaleUpperCase().startsWith(firstCharacter.toLocaleUpperCase()))
         )
         .map(({ artist, playCount, lastPlayedAt }) => ({ ...artist, playCount, lastPlayedAt }));
-      const page = libraryPage(filtered.map(artistItem), (reply.request as RouteRequest).query);
+      const page = libraryPage(
+        sortByTitle(filtered.map(artistItem), query, (item) => item.title),
+        (reply.request as RouteRequest).query,
+        (reply.request as RouteRequest).headers
+      );
       return json
         ? reply.type('application/json').send(libraryItemsJson(page.items, 'artist', page.totalSize, page.offset))
         : reply.type(xml('').type).send(libraryItems(page.items, 'artist', page.totalSize, page.offset));
@@ -815,8 +838,13 @@ export function registerLibraryRoutes(
         (album) => album.lastPlayedAt
       );
       const page = libraryPage(
-        filtered.map((album) => albumItem(album)),
-        (reply.request as RouteRequest).query
+        sortByTitle(
+          filtered.map((album) => albumItem(album)),
+          (reply.request as RouteRequest).query,
+          (item) => item.title
+        ),
+        (reply.request as RouteRequest).query,
+        (reply.request as RouteRequest).headers
       );
       return json
         ? reply.type('application/json').send(libraryItemsJson(page.items, 'album', page.totalSize, page.offset))
@@ -861,8 +889,13 @@ export function registerLibraryRoutes(
         (song) => song.lastPlayedAt
       );
       const page = libraryPage(
-        filtered.map((song) => songItem(song)),
-        (reply.request as RouteRequest).query
+        sortByTitle(
+          filtered.map((song) => songItem(song)),
+          (reply.request as RouteRequest).query,
+          (item) => item.title
+        ),
+        (reply.request as RouteRequest).query,
+        (reply.request as RouteRequest).headers
       );
       return json
         ? reply.type('application/json').send(libraryItemsJson(page.items, 'track', page.totalSize, page.offset))
@@ -1264,7 +1297,10 @@ export function registerLibraryRoutes(
         expiresAt: now() + BUILDER_CONTEXT_TTL_MS
       });
     }
-    return reply.code(404).send('Top library items are not available\n');
+    const json = request.headers.accept?.includes('application/json');
+    if (type === '8') return artistListing(reply, json);
+    if (type === '9') return albumListing(reply, json);
+    return reply.code(400).send('Unsupported library type\n');
   });
   app.get('/library/sections/:id/computePath', async (request, reply) => {
     if (request.params.id !== '1') return reply.code(404).send('Unknown library section\n');
@@ -1314,8 +1350,9 @@ export function registerLibraryRoutes(
       const matchingArtists = matches(artists);
       const context = builderContext(request);
       const sonicAdventureSearch =
-        request.query.type === '10' ||
-        (request.query.includeCollections === '1' && request.query.contentDirectoryID === '1');
+        !context &&
+        (request.query.type === '10' ||
+          (request.query.includeCollections === '1' && request.query.contentDirectoryID === '1'));
       const matchingTracks = sonicAdventureSearch ? matches(await music.songs()) : [];
       const matchingAlbums = context === 'artist' ? [] : matches(await music.albums());
       const hubs = sonicAdventureSearch
