@@ -1,8 +1,14 @@
 # PlexBridge
 
-PlexBridge is a Dockerized HTTP service that presents a persistent Plex-shaped identity and exposes a Plex-compatible music library backed by Navidrome.
+PlexBridge is an independent Dockerized HTTP service that presents a persistent Plex-shaped identity and exposes a Plex-protocol-compatible music library backed by Navidrome.
 
 PlexBridge is released under the [GNU Affero General Public License v3.0](LICENSE).
+
+## Relationship to Plex
+
+PlexBridge is an unofficial, independent compatibility project. It is not made by, endorsed by, sponsored by, or affiliated with Plex, Inc. “Plex,” “Plexamp,” and “Plex Media Server” are trademarks of Plex, Inc.; this project does not include or redistribute Plex software, logos, or other Plex-owned assets.
+
+The Plex-facing behavior exists so the unmodified Plexamp client can be used with a personal Navidrome library. Users are responsible for their own Plex account, subscription, and compliance with the terms that apply to the services they use.
 
 ## Current status
 
