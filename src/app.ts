@@ -286,6 +286,11 @@ export function createApp(
     await savePlayHistory();
   };
 
+  const hasPlayHistory = async (externalId: string) => {
+    await loadPlayHistory();
+    return playHistory.some((play) => play.externalId === externalId);
+  };
+
   const plexPlaylistIds = new Map<string, string>();
 
   let playlistIdsLoaded = false;
@@ -619,6 +624,7 @@ export function createApp(
     preserveSourceFormats: settings.preserveSourceFormats,
     now,
     onPlay: recordPlay,
+    hasPlayHistory,
     onPlaybackState: recordPlaybackState,
     ...timers
   });

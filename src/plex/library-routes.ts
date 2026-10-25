@@ -39,7 +39,8 @@ export interface PlayRecord {
   album?: string;
   playedAt: number;
   player: string;
-  source: 'timeline' | 'estimated' | 'plex_scrobble';
+  source: 'timeline' | 'estimated' | 'plex_scrobble' | 'plex_offline';
+  externalId?: string;
 }
 export interface ActivePlayRecord {
   trackId: string;
@@ -61,6 +62,7 @@ interface LibraryRouteDependencies {
   setTimeout?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
   clearTimeout?: (timer: ReturnType<typeof setTimeout>) => void;
   onPlay?: (play: PlayRecord) => Promise<void> | void;
+  hasPlayHistory?: (externalId: string) => Promise<boolean> | boolean;
   onPlaybackState?: (play: ActivePlayRecord | undefined) => Promise<void> | void;
 }
 
@@ -80,6 +82,7 @@ interface PlaybackState {
   activeMs: number;
   lastSignalMs: number;
   lastState: string;
+  externalId?: string;
   fallbackTimer?: ReturnType<typeof setTimeout>;
 }
 
@@ -180,6 +183,7 @@ export function registerLibraryRoutes(
     setTimeout: setTimeoutFn = setTimeout,
     clearTimeout: clearTimeoutFn = clearTimeout,
     onPlay,
+    hasPlayHistory,
     onPlaybackState
   }: LibraryRouteDependencies
 ): { invalidateLibraryCaches: () => void } {
@@ -515,6 +519,8 @@ export function registerLibraryRoutes(
       state?: string;
       time?: string;
       duration?: string;
+      offline?: string;
+      viewCount?: string;
       ratingKey?: string;
       key?: string;
       playQueueID?: string;
@@ -527,6 +533,8 @@ export function registerLibraryRoutes(
         state: query.state ?? '',
         time: query.time ?? '',
         duration: query.duration ?? '',
+        offline: query.offline ?? '',
+        viewCount: query.viewCount ?? '',
         ratingKey: query.ratingKey ?? '',
         key: query.key ?? '',
         playQueueID: query.playQueueID ?? '',
@@ -540,6 +548,10 @@ export function registerLibraryRoutes(
     const parsed = parseKey(current.ratingKey);
     if (parsed?.kind !== 's') return;
     clearFallbackTimer(current);
+    if (current.externalId && (await hasPlayHistory?.(current.externalId))) {
+      current.scrobbled = true;
+      return;
+    }
     current.scrobbled = true;
     try {
       await music.scrobble(parsed.id);
@@ -574,7 +586,8 @@ export function registerLibraryRoutes(
         album: song.album,
         playedAt: now(),
         player: playerKey,
-        source
+        source,
+        ...(current.externalId ? { externalId: current.externalId } : {})
       });
     } catch (error) {
       console.warn(
@@ -606,7 +619,19 @@ export function registerLibraryRoutes(
       duration?: string;
       ratingKey?: string;
       key?: string;
+      offline?: string;
+      viewCount?: string;
+      updatedAt?: string;
     };
+    if (query.offline === '1' && query.state === 'stopped' && Number(query.viewCount ?? 0) > 0) {
+      const playerKey = playbackPlayerKey(request);
+      const ratingKey = trackRatingKey(query);
+      const updatedAt = Number(query.updatedAt ?? 0);
+      const externalId =
+        Number.isFinite(updatedAt) && updatedAt > 0 ? `plex-offline:${playerKey}:${ratingKey}:${updatedAt}` : undefined;
+      await recordExplicitScrobble(request, true, 'plex_offline', externalId);
+      return;
+    }
     const playerKey = playbackPlayerKey(request);
     const previous = playback.get(playerKey);
     const ratingKey = trackRatingKey(query) || previous?.ratingKey || '';
@@ -686,7 +711,12 @@ export function registerLibraryRoutes(
       return scheduleFallbackTimer(playerKey, current);
     await scrobblePlayback(playerKey, current, 'timeline');
   };
-  const recordExplicitScrobble = async (request: RouteRequest) => {
+  const recordExplicitScrobble = async (
+    request: RouteRequest,
+    force = false,
+    source: PlayRecord['source'] = 'plex_scrobble',
+    externalId?: string
+  ) => {
     const query = request.query as { ratingKey?: string; key?: string; time?: string; duration?: string };
     const ratingKey = trackRatingKey(query);
     const parsed = parseKey(ratingKey);
@@ -702,7 +732,8 @@ export function registerLibraryRoutes(
       scrobbled: false,
       activeMs: previous?.ratingKey === ratingKey ? previous.activeMs : 0,
       lastSignalMs: now(),
-      lastState: 'stopped'
+      lastState: 'stopped',
+      externalId
     };
     playback.set(playerKey, current);
     const durationMs = current.durationMs;
@@ -716,7 +747,7 @@ export function registerLibraryRoutes(
       }
     }
     const reachedThreshold = current.durationMs > 0 && current.maxTimeMs >= current.durationMs * SCROBBLE_THRESHOLD;
-    if (reachedThreshold) await scrobblePlayback(playerKey, current, 'plex_scrobble');
+    if (force || reachedThreshold) await scrobblePlayback(playerKey, current, source);
     else {
       current.lastState = 'playing';
       await onPlaybackState?.({

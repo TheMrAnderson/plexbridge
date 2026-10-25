@@ -21,6 +21,7 @@ The following behavior was verified against Plexamp using PlexBridge and Navidro
 - Paused time does not count toward effective progress. Buffering time counts as active playback time because Plexamp is still progressing through the playback transition.
 - If Plexamp never sends the next track event, PlexBridge retains a 110% active-progress timer as a last-ditch fallback. This is not the normal completion path for Plexamp's observed start-only reporting pattern.
 - Plexamp may send `PUT /:/rate` when it explicitly marks a track played. PlexBridge treats that request as an immediate explicit scrobble. It also accepts `GET`, `POST`, and `PUT` timeline requests.
+- After reconnecting, Plexamp may replay offline history as `/:/timeline?offline=1&state=stopped&viewCount=1&time=0` requests. PlexBridge treats those records as completed-play signals, forwards one provider scrobble per track, and deduplicates repeats.
 
 Successful provider scrobbles are logged as `music_scrobbled` and are written to the recent play history shown by the browser dashboard. Provider failures are logged as `music_scrobble_failed` and do not create play-history entries.
 

@@ -619,6 +619,25 @@ test('explicit Plex scrobbles are forwarded to the music provider', async () => 
   assert.deepEqual(scrobbled, ['track-42']);
 });
 
+test('offline Plexamp play history is forwarded as a completed scrobble', async () => {
+  const scrobbled: string[] = [];
+  const musicProvider = new Proxy({} as MusicProvider, {
+    get: (_target, property) =>
+      property === 'scrobble'
+        ? async (id: string) => {
+            scrobbled.push(id);
+          }
+        : async () => []
+  }) as MusicProvider;
+  await withApp(async (app) => {
+    const headers = { 'x-plex-client-identifier': 'offline-player', accept: 'application/json' };
+    const url = '/:/timeline?offline=1&ratingKey=s-track-offline&state=stopped&viewCount=1&time=0';
+    assert.equal((await app.inject({ method: 'GET', url, headers })).statusCode, 200);
+    assert.equal((await app.inject({ method: 'GET', url, headers })).statusCode, 200);
+  }, musicProvider);
+  assert.deepEqual(scrobbled, ['track-offline']);
+});
+
 test('Plex rate requests are treated as explicit scrobbles', async () => {
   const scrobbled: string[] = [];
   const musicProvider = new Proxy({} as MusicProvider, {
