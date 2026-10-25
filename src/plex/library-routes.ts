@@ -1613,6 +1613,15 @@ export function registerLibraryRoutes(
       return reply.code(502).send('Navidrome stream unavailable\n');
     }
   });
+  app.get('/library/streams/:id/levels', async (_request, reply) =>
+    reply.type('application/json').send({
+      MediaContainer: {
+        size: 0,
+        totalSamples: '0',
+        Level: []
+      }
+    })
+  );
   app.get('/audio/:/transcode/universal/decision', async (request, reply) => {
     const match = /(?:^|\/)library\/metadata\/(s-[^/?#]+)/.exec(String(request.query.path ?? ''));
     const parsed = match ? parseKey(match[1]) : undefined;

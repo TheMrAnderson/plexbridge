@@ -73,6 +73,46 @@ test('identity persists and is consistent across endpoints', async () =>
     assert.match((await app.inject('/library/sections')).body, new RegExp(`uuid="${stored.libraryUuid}"`));
   }));
 
+test('download queue supports direct-play track downloads', async () =>
+  withApp(async (app) => {
+    const created = await app.inject({
+      method: 'POST',
+      url: '/downloadQueue',
+      headers: { accept: 'application/json', 'x-plex-client-identifier': 'test-client' }
+    });
+    assert.equal(created.statusCode, 200);
+    const queue = JSON.parse(created.body).MediaContainer.DownloadQueue[0];
+    assert.equal(queue.itemCount, 0);
+
+    const reused = await app.inject({
+      method: 'POST',
+      url: '/downloadQueue',
+      headers: { accept: 'application/json', 'x-plex-client-identifier': 'test-client' }
+    });
+    assert.equal(JSON.parse(reused.body).MediaContainer.DownloadQueue[0].id, queue.id);
+
+    const added = await app.inject({
+      method: 'POST',
+      url: `/downloadQueue/${queue.id}/add?keys=%2Flibrary%2Fmetadata%2Fs-song-1,%2Flibrary%2Fmetadata%2Fs-song-2`,
+      headers: { accept: 'application/json' }
+    });
+    assert.equal(added.statusCode, 200);
+    assert.deepEqual(JSON.parse(added.body).MediaContainer.AddedQueueItems, [
+      { key: '/library/metadata/s-song-1', id: 1 },
+      { key: '/library/metadata/s-song-2', id: 2 }
+    ]);
+
+    const items = await app.inject({
+      method: 'GET',
+      url: `/downloadQueue/${queue.id}/items`,
+      headers: { accept: 'application/json' }
+    });
+    assert.equal(items.statusCode, 200);
+    const item = JSON.parse(items.body).MediaContainer.DownloadQueueItem[0];
+    assert.equal(item.status, 'available');
+    assert.equal(item.DecisionResult.directPlayDecisionCode, 1000);
+  }));
+
 test('browser requests to the root serve the listening dashboard', async () =>
   withApp(async (app) => {
     const response = await app.inject({
@@ -987,6 +1027,7 @@ test('track metadata advertises PMS-compatible artwork in queues and library res
       { alt: 'Demo', type: 'background', url: item.art }
     ]);
     assert.deepEqual(metadata.Media[0].Part[0].Stream[0], {
+      id: 1,
       streamType: 2,
       selected: 1,
       gain: -8.25,
@@ -996,6 +1037,19 @@ test('track metadata advertises PMS-compatible artwork in queues and library res
     });
   }
 });
+
+test('loudness levels endpoint returns an empty sample set for synthetic streams', async () =>
+  withApp(async (app) => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/library/streams/1/levels?subsample=128',
+      headers: { accept: 'application/json' }
+    });
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(JSON.parse(response.body), {
+      MediaContainer: { size: 0, totalSamples: '0', Level: [] }
+    });
+  }));
 
 test('unknown endpoints return 404 and do not echo token', async () =>
   withApp(async (app) => {

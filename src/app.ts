@@ -26,6 +26,7 @@ import { ensurePlexCertificate, hasPlexCertificate, plexDirectUrl } from './plex
 import { adminPage, adminScript, adminStyles } from './plex/admin-page.js';
 import { homePage, homeScript, homeStyles } from './plex/home-page.js';
 import { registerPlaylistRoutes } from './plex/playlist-routes.js';
+import { registerDownloadRoutes } from './plex/download-routes.js';
 import { registerLibraryRoutes, type ActivePlayRecord, type PlayRecord } from './plex/library-routes.js';
 import { WebAuth } from './web-auth.js';
 import { loadAppSettings, saveAppSettings, validateAppSettings, type AppSettings } from './app-settings.js';
@@ -614,6 +615,7 @@ export function createApp(
     loadPlaylistIds,
     savePlaylistIds
   });
+  registerDownloadRoutes(app);
   const libraryRoutes = registerLibraryRoutes(app, {
     configDir: settings.configDir,
     music: navidrome,

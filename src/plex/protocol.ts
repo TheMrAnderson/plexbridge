@@ -890,6 +890,7 @@ function replayGainStream(replayGain: NonNullable<NonNullable<PlexItem['media']>
   const peak = replayGain.trackPeak ?? albumPeak;
   if (albumGain === undefined && albumPeak === undefined && gain === undefined && peak === undefined) return undefined;
   return {
+    id: 1,
     streamType: 2,
     selected: 1,
     ...(gain === undefined ? {} : { gain }),
@@ -929,7 +930,7 @@ export function libraryItems(
     if (item.type !== 'track') return `<Directory ${attrs.join(' ')}/>`;
     const gain = item.media?.replayGain ? replayGainStream(item.media.replayGain) : undefined;
     const stream = gain
-      ? `<Stream streamType="2" selected="1"${gain.gain === undefined ? '' : ` gain="${gain.gain}"`}${gain.albumGain === undefined ? '' : ` albumGain="${gain.albumGain}"`}${gain.peak === undefined ? '' : ` peak="${gain.peak}"`}${gain.albumPeak === undefined ? '' : ` albumPeak="${gain.albumPeak}"`}/>`
+      ? `<Stream id="1" streamType="2" selected="1"${gain.gain === undefined ? '' : ` gain="${gain.gain}"`}${gain.albumGain === undefined ? '' : ` albumGain="${gain.albumGain}"`}${gain.peak === undefined ? '' : ` peak="${gain.peak}"`}${gain.albumPeak === undefined ? '' : ` albumPeak="${gain.albumPeak}"`}/>`
       : '';
     const media = item.media
       ? `<Media duration="${(item.media.duration ?? item.duration ?? 0) * 1000}" container="${xmlEscape(item.media.container ?? 'mp3')}" audioCodec="${xmlEscape(item.media.audioCodec ?? 'mp3')}" bitrate="${item.media.bitrate ?? 0}"><Part key="${xmlEscape(item.media.partKey)}" duration="${(item.media.duration ?? item.duration ?? 0) * 1000}" size="${item.media.size ?? 0}">${stream}</Part></Media>`
