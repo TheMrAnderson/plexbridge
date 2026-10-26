@@ -496,11 +496,13 @@ test('Plexamp endpoint contracts preserve the playback and download response sha
 
     const decision = await app.inject({
       method: 'GET',
-      url: `/audio/:/transcode/universal/decision?path=${encodeURIComponent('/library/metadata/s-song-1')}&directPlay=1`,
+      url: `/audio/:/transcode/universal/decision?path=${encodeURIComponent('/library/metadata/s-song-1')}&directPlay=0`,
       headers: jsonHeaders
     });
     assert.equal(decision.statusCode, 200);
-    assert.equal(JSON.parse(decision.body).MediaContainer.Metadata[0].Media[0].Part[0].decision, 'directplay');
+    const decisionBody = JSON.parse(decision.body).MediaContainer;
+    assert.equal(decisionBody.directPlayDecisionCode, 1000);
+    assert.equal(decisionBody.Metadata[0].Media[0].Part[0].decision, 'directplay');
 
     const stream = await app.inject({ method: 'GET', url: '/library/metadata/s-song-1/stream?download=1' });
     assert.equal(stream.statusCode, 200);
@@ -525,6 +527,36 @@ test('playlist discovery is available at the advertised Plex routes', async () =
     assert.equal(libraryPlaylistRoute.statusCode, 200);
     assert.equal(JSON.parse(libraryPlaylistRoute.body).MediaContainer.size, 0);
   }));
+
+test('preserved M4A stays direct-playable when Plexamp requests conversion', async () => {
+  const musicProvider = new Proxy({} as MusicProvider, {
+    get: (_target, property) => {
+      if (property === 'song')
+        return async () => ({
+          id: 'm4a-song',
+          title: 'M4A Song',
+          suffix: 'm4a',
+          contentType: 'audio/mp4',
+          duration: 180,
+          size: 10
+        });
+      return async () => [];
+    }
+  }) as MusicProvider;
+
+  await withApp(async (app) => {
+    const response = await app.inject({
+      method: 'GET',
+      url: `/audio/:/transcode/universal/decision?path=${encodeURIComponent('/library/metadata/s-m4a-song')}&directPlay=0`,
+      headers: { accept: 'application/json' }
+    });
+    assert.equal(response.statusCode, 200);
+    const body = JSON.parse(response.body).MediaContainer;
+    assert.equal(body.directPlayDecisionCode, 1000);
+    assert.equal(body.Metadata[0].Media[0].container, 'm4a');
+    assert.equal(body.Metadata[0].Media[0].Part[0].decision, 'directplay');
+  }, musicProvider);
+});
 
 test('artist mix queues include tracks credited to each selected artist', async () => {
   const musicProvider = new Proxy({} as MusicProvider, {

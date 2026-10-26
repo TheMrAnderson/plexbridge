@@ -22,12 +22,16 @@ export function transcodeTarget(clientProfile: string): AudioTarget {
 export function audioDecision(
   song: MusicSong,
   preserveSourceFormats: boolean,
-  directPlayRequested: boolean,
+  _directPlayRequested: boolean,
   clientProfile: string
 ): { sourceFormat: string; sourceDirectPlayable: boolean; directPlayable: boolean; target: AudioTarget } {
   const sourceFormat = (song.suffix ?? song.contentType?.split('/')[1] ?? 'mp3').toLowerCase();
   const sourceDirectPlayable = preserveSourceFormats && directPlayableFormats.has(sourceFormat);
-  const directPlayable = directPlayRequested && sourceDirectPlayable;
+  // Plexamp can send directPlay=0 while asking the server for a conversion
+  // profile. When source preservation is enabled, a supported source format
+  // must remain direct-playable; otherwise PRESERVE_SOURCE_FORMATS would be
+  // defeated by the client's conversion preference.
+  const directPlayable = sourceDirectPlayable;
   return {
     sourceFormat,
     sourceDirectPlayable,
