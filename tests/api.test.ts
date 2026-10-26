@@ -438,6 +438,77 @@ test('media providers discovery exposes the music library provider', async () =>
     assert.match(response.body, /<Feature key="\/library\/search" type="universalsearch">/);
   }));
 
+test('Plexamp endpoint contracts preserve the playback and download response shapes', async () => {
+  const song = {
+    id: 'song-1',
+    title: 'Contract Song',
+    album: 'Contract Album',
+    albumId: 'album-1',
+    artist: 'Contract Artist',
+    artistId: 'artist-1',
+    duration: 120,
+    suffix: 'mp3',
+    contentType: 'audio/mpeg',
+    bitRate: 192,
+    size: 2,
+    replayGain: { trackGain: -8, albumGain: -7, trackPeak: 0.9, albumPeak: 0.95 }
+  };
+  const musicProvider = new Proxy({} as MusicProvider, {
+    get: (_target, property) => {
+      if (property === 'song') return async () => song;
+      if (property === 'songs') return async () => [song];
+      if (property === 'playlist')
+        return async () => ({
+          playlist: { id: 'playlist-1', name: 'Contract Playlist', songCount: 1, duration: 120 },
+          songs: [song]
+        });
+      if (property === 'streamUrl') return async () => 'data:audio/mpeg;base64,TUQ=';
+      return async () => [];
+    }
+  }) as MusicProvider;
+
+  await withApp(async (app) => {
+    const jsonHeaders = { accept: 'application/json' };
+    const metadata = await app.inject({ method: 'GET', url: '/library/metadata/s-song-1', headers: jsonHeaders });
+    assert.equal(metadata.statusCode, 200);
+    const metadataItem = JSON.parse(metadata.body).MediaContainer.Metadata[0];
+    assert.equal(metadataItem.Media[0].Part[0].key, '/library/metadata/s-song-1/stream');
+    assert.ok(metadataItem.Media[0].Stream);
+    assert.equal(metadataItem.Media[0].Part[0].Stream, undefined);
+
+    const queue = await app.inject({
+      method: 'POST',
+      url: '/playQueues?key=%2Flibrary%2Fmetadata%2Fs-song-1&type=audio',
+      headers: jsonHeaders
+    });
+    assert.equal(queue.statusCode, 200);
+    assert.equal(
+      JSON.parse(queue.body).MediaContainer.Metadata[0].Media[0].Part[0].key,
+      metadataItem.Media[0].Part[0].key
+    );
+
+    const playlist = await app.inject({ method: 'GET', url: '/playlists/10000/items', headers: jsonHeaders });
+    assert.equal(playlist.statusCode, 200);
+    assert.equal(
+      JSON.parse(playlist.body).MediaContainer.Metadata[0].Media[0].Part[0].key,
+      metadataItem.Media[0].Part[0].key
+    );
+
+    const decision = await app.inject({
+      method: 'GET',
+      url: `/audio/:/transcode/universal/decision?path=${encodeURIComponent('/library/metadata/s-song-1')}&directPlay=1`,
+      headers: jsonHeaders
+    });
+    assert.equal(decision.statusCode, 200);
+    assert.equal(JSON.parse(decision.body).MediaContainer.Metadata[0].Media[0].Part[0].decision, 'directplay');
+
+    const stream = await app.inject({ method: 'GET', url: '/library/metadata/s-song-1/stream?download=1' });
+    assert.equal(stream.statusCode, 200);
+    assert.match(stream.headers['content-type'] ?? '', /^audio\/mpeg/);
+    assert.equal(stream.body, 'MD');
+  }, musicProvider);
+});
+
 test('playlist discovery is available at the advertised Plex routes', async () =>
   withApp(async (app) => {
     for (const url of ['/playlists', '/playlists?playlistType=audio', '/playlists/all', '/playlists/1/items']) {
