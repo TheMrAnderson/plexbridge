@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { createApp } from '../src/app.js';
 import { loadSettings } from '../src/config.js';
-import { libraryItemsJson, playQueueJson } from '../src/plex/protocol.js';
+import { libraryItems, libraryItemsJson, playQueueJson, playlistQueueJson } from '../src/plex/protocol.js';
 import type { MusicProvider } from '../src/music/types.js';
 
 async function withApp<T>(
@@ -111,7 +111,48 @@ test('download queue supports direct-play track downloads', async () =>
     const item = JSON.parse(items.body).MediaContainer.DownloadQueueItem[0];
     assert.equal(item.status, 'available');
     assert.equal(item.DecisionResult.directPlayDecisionCode, 1000);
+
+    const decision = await app.inject({
+      method: 'GET',
+      url: `/downloadQueue/${queue.id}/item/${item.id}/decision`,
+      headers: { accept: 'application/json' }
+    });
+    assert.equal(decision.statusCode, 200);
+    assert.equal(JSON.parse(decision.body).MediaContainer.generalDecisionCode, 1000);
+
+    const invalid = await app.inject({
+      method: 'POST',
+      url: `/downloadQueue/${queue.id}/add?keys=%2Flibrary%2Fmetadata%2Fl-album-1`,
+      headers: { accept: 'application/json' }
+    });
+    assert.equal(invalid.statusCode, 400);
   }));
+
+test('download queue media applies the same unsupported-format MP3 fallback as playback', async () => {
+  const musicProvider = new Proxy({} as MusicProvider, {
+    get: (_target, property) => {
+      if (property === 'song') return async () => ({ id: 'song-1', title: 'Song', suffix: 'ogg' });
+      if (property === 'streamUrl')
+        return async (_id: string, options?: { format?: string }) =>
+          options?.format === 'mp3' ? 'data:audio/mpeg;base64,TVAz' : 'data:audio/ogg;base64,T0dH';
+      return async () => [];
+    }
+  }) as MusicProvider;
+
+  await withApp(async (app) => {
+    const created = await app.inject({ method: 'POST', url: '/downloadQueue' });
+    const queueId = JSON.parse(created.body).MediaContainer.DownloadQueue[0].id;
+    const added = await app.inject({
+      method: 'POST',
+      url: `/downloadQueue/${queueId}/add?keys=%2Flibrary%2Fmetadata%2Fs-song-1`
+    });
+    const itemId = JSON.parse(added.body).MediaContainer.AddedQueueItems[0].id;
+    const media = await app.inject({ method: 'GET', url: `/downloadQueue/${queueId}/item/${itemId}/media` });
+    assert.equal(media.statusCode, 200);
+    assert.equal(media.headers['content-type'], 'audio/mpeg');
+    assert.equal(media.body, 'MP3');
+  }, musicProvider);
+});
 
 test('browser requests to the root serve the listening dashboard', async () =>
   withApp(async (app) => {
@@ -1000,7 +1041,7 @@ test('paused time stops the estimate but buffering time advances it', async () =
   assert.deepEqual(scrobbled, ['track-47']);
 });
 
-test('track metadata advertises PMS-compatible artwork in queues and library responses', () => {
+test('loudness streams stay beside Part in every PMS metadata response', () => {
   const item = {
     ratingKey: 's-demo',
     key: '/library/metadata/s-demo',
@@ -1018,15 +1059,18 @@ test('track metadata advertises PMS-compatible artwork in queues and library res
   };
   const queueMetadata = JSON.parse(playQueueJson(item, '1', 'library://plexbridge-music/item//library/metadata/s-demo'))
     .MediaContainer.Metadata[0];
+  const playlistMetadata = JSON.parse(
+    playlistQueueJson([item], '1', 'library://plexbridge-music/playlist/10000', '10000', 'Playlist', false)
+  ).MediaContainer.Metadata[0];
   const libraryMetadata = JSON.parse(libraryItemsJson([item], 'track')).MediaContainer.Metadata[0];
-  for (const metadata of [queueMetadata, libraryMetadata]) {
+  for (const metadata of [queueMetadata, playlistMetadata, libraryMetadata]) {
     assert.equal(metadata.thumb, item.thumb);
     assert.equal(metadata.art, item.art);
     assert.deepEqual(metadata.Image, [
       { alt: 'Demo', type: 'coverPoster', url: item.thumb },
       { alt: 'Demo', type: 'background', url: item.art }
     ]);
-    assert.deepEqual(metadata.Media[0].Part[0].Stream[0], {
+    assert.deepEqual(metadata.Media[0].Stream[0], {
       id: 1,
       streamType: 2,
       selected: 1,
@@ -1035,7 +1079,12 @@ test('track metadata advertises PMS-compatible artwork in queues and library res
       peak: 0.98,
       albumPeak: 0.98
     });
+    assert.equal(metadata.Media[0].Part[0].Stream, undefined);
   }
+
+  const xml = libraryItems([item], 'track');
+  assert.match(xml, /<Media [^>]*><Stream [^>]*><Part /);
+  assert.doesNotMatch(xml, /<Part [^>]*><Stream /);
 });
 
 test('loudness levels endpoint returns an empty sample set for synthetic streams', async () =>

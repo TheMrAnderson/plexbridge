@@ -18,7 +18,15 @@ import {
   searchJson,
   timelineJson
 } from './protocol.js';
-import { albumItem, artistItem, directPlayableFormats, parseMetadataKey as parseKey, songItem } from './metadata.js';
+import {
+  albumItem,
+  artistItem,
+  audioStreamOptions,
+  audioDecision,
+  parseMetadataKey as parseKey,
+  songItem,
+  streamOptions
+} from './metadata.js';
 import type { PlexItem } from './protocol.js';
 
 type RouteRequest = FastifyRequest<{
@@ -90,16 +98,6 @@ const SCROBBLE_THRESHOLD = 0.75;
 const FALLBACK_THRESHOLD = 1.1;
 const MAX_LIBRARY_PAGE_SIZE = 500;
 const BUILDER_CONTEXT_TTL_MS = 45_000;
-
-function transcodeTarget(request: RouteRequest): { format: string; container: string; audioCodec: string } {
-  const profile = String(
-    request.query['X-Plex-Client-Profile-Extra'] ?? request.headers['x-plex-client-profile-extra'] ?? ''
-  );
-  const container = /container=([^&)]+)/.exec(profile)?.[1]?.toLowerCase();
-  const audioCodec = /audioCodec=([^&)]+)/.exec(profile)?.[1]?.toLowerCase();
-  if (container === 'ogg' && audioCodec === 'opus') return { format: 'opus', container: 'ogg', audioCodec: 'opus' };
-  return { format: 'mp3', container: 'mp3', audioCodec: 'mp3' };
-}
 
 function libraryPage<T>(
   items: T[],
@@ -1569,11 +1567,7 @@ export function registerLibraryRoutes(
     if (parsed?.kind !== 's') return reply.code(404).send('Unknown track\n');
     try {
       const source = await music.song(parsed.id);
-      const sourceFormat = (source.suffix ?? source.contentType?.split('/')[1] ?? 'mp3').toLowerCase();
-      const streamUrl =
-        preserveSourceFormats && directPlayableFormats.has(sourceFormat)
-          ? await music.streamUrl(parsed.id)
-          : await music.streamUrl(parsed.id, { format: 'mp3' });
+      const streamUrl = await music.streamUrl(parsed.id, streamOptions(source, preserveSourceFormats));
       const range = request.headers.range;
       const response = await fetch(streamUrl, range ? { headers: { range } } : undefined);
       console.debug(
@@ -1631,11 +1625,11 @@ export function registerLibraryRoutes(
       const sourceFormat = (source.suffix ?? source.contentType?.split('/')[1] ?? 'mp3').toLowerCase();
       const item = songItem(source);
       const directPlayRequested = request.query.directPlay !== '0';
-      const sourceDirectPlayable = preserveSourceFormats && directPlayableFormats.has(sourceFormat);
-      const directPlayable = directPlayRequested && sourceDirectPlayable;
-      const target = directPlayable
-        ? { format: sourceFormat, container: sourceFormat, audioCodec: sourceFormat }
-        : transcodeTarget(request);
+      const clientProfile = String(
+        request.query['X-Plex-Client-Profile-Extra'] ?? request.headers['x-plex-client-profile-extra'] ?? ''
+      );
+      const playback = audioDecision(source, preserveSourceFormats, directPlayRequested, clientProfile);
+      const { directPlayable, sourceDirectPlayable, target } = playback;
       console.debug(
         JSON.stringify({
           event: 'audio_decision',
@@ -1648,8 +1642,7 @@ export function registerLibraryRoutes(
           outputFormat: target.format,
           outputContainer: target.container,
           outputAudioCodec: target.audioCodec,
-          clientProfile:
-            request.query['X-Plex-Client-Profile-Extra'] ?? request.headers['x-plex-client-profile-extra'] ?? ''
+          clientProfile: clientProfile
         })
       );
       const metadata = JSON.parse(libraryItemsJson([item], 'track')).MediaContainer.Metadata[0] as Record<
@@ -1700,12 +1693,11 @@ export function registerLibraryRoutes(
         : undefined;
     try {
       const source = await music.song(parsed.id);
-      const sourceFormat = (source.suffix ?? source.contentType?.split('/')[1] ?? 'mp3').toLowerCase();
-      const sourceDirectPlayable = preserveSourceFormats && directPlayableFormats.has(sourceFormat);
-      const canDirectPlay = directPlay && sourceDirectPlayable;
-      const target = canDirectPlay
-        ? { format: sourceFormat, container: sourceFormat, audioCodec: sourceFormat }
-        : transcodeTarget(request);
+      const clientProfile = String(
+        request.query['X-Plex-Client-Profile-Extra'] ?? request.headers['x-plex-client-profile-extra'] ?? ''
+      );
+      const playback = audioDecision(source, preserveSourceFormats, directPlay, clientProfile);
+      const { sourceFormat, sourceDirectPlayable, directPlayable: canDirectPlay, target } = playback;
       console.debug(
         JSON.stringify({
           event: 'audio_stream',
@@ -1723,7 +1715,10 @@ export function registerLibraryRoutes(
             request.query['X-Plex-Client-Profile-Extra'] ?? request.headers['x-plex-client-profile-extra'] ?? ''
         })
       );
-      const streamUrl = await music.streamUrl(parsed.id, canDirectPlay ? {} : { format: target.format, maxBitRate });
+      const streamUrl = await music.streamUrl(
+        parsed.id,
+        audioStreamOptions(source, preserveSourceFormats, directPlay, clientProfile, maxBitRate)
+      );
       const range = request.headers.range;
       const response = await fetch(streamUrl, range ? { headers: { range } } : undefined);
       console.debug(

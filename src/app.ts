@@ -615,7 +615,7 @@ export function createApp(
     loadPlaylistIds,
     savePlaylistIds
   });
-  registerDownloadRoutes(app);
+  registerDownloadRoutes(app, { music: navidrome, preserveSourceFormats: settings.preserveSourceFormats });
   const libraryRoutes = registerLibraryRoutes(app, {
     configDir: settings.configDir,
     music: navidrome,

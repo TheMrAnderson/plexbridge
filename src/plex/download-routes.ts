@@ -1,4 +1,8 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
+import { Readable } from 'node:stream';
+import type { ReadableStream } from 'node:stream/web';
+import type { MusicProvider } from '../music/types.js';
+import { audioStreamOptions, parseMetadataKey } from './metadata.js';
 
 type RouteRequest = FastifyRequest<{
   Querystring: Record<string, string | string[] | undefined>;
@@ -10,6 +14,11 @@ interface RouteApp {
   get(path: string, handler: (request: RouteRequest, reply: RouteReply) => unknown): unknown;
   post(path: string, handler: (request: RouteRequest, reply: RouteReply) => unknown): unknown;
   delete(path: string, handler: (request: RouteRequest, reply: RouteReply) => unknown): unknown;
+}
+
+interface DownloadRouteDependencies {
+  music: MusicProvider;
+  preserveSourceFormats: boolean;
 }
 
 interface DownloadQueueItem {
@@ -33,32 +42,40 @@ function queueBody(queue: DownloadQueue): string {
   });
 }
 
+const decision = {
+  generalDecisionCode: 1000,
+  generalDecisionText: 'Direct play OK.',
+  directPlayDecisionCode: 1000,
+  directPlayDecisionText: 'Direct play OK.'
+};
+
 function itemsBody(items: DownloadQueueItem[]): string {
   return JSON.stringify({
     MediaContainer: {
       size: items.length,
       DownloadQueueItem: items.map((item) => ({
         ...item,
-        DecisionResult: {
-          generalDecisionCode: 1000,
-          generalDecisionText: 'Direct play OK.',
-          directPlayDecisionCode: 1000,
-          directPlayDecisionText: 'Direct play OK.'
-        }
+        DecisionResult: decision
       }))
     }
   });
 }
 
-function queryKeys(query: Record<string, string | string[] | undefined>): string[] {
+function queryKeys(query: Record<string, string | string[] | undefined>): { keys?: string[]; error?: string } {
   const values = Array.isArray(query.keys) ? query.keys : [query.keys];
-  return values
-    .flatMap((value) => (value ? value.split(',') : []))
-    .map((value) => value.trim())
-    .filter((value) => /^\/library\/metadata\/s-[^/?#]+$/.test(value));
+  const supplied = values.flatMap((value) => (value ? value.split(',') : [])).map((value) => value.trim());
+  if (!supplied.length) return { error: 'The keys query parameter is required\n' };
+  const invalid = supplied.filter((value) => !/^\/library\/metadata\/s-[^/?#]+$/.test(value));
+  if (invalid.length) return { error: `Unsupported download key: ${invalid[0]}\n` };
+  return {
+    keys: supplied
+  };
 }
 
-export function registerDownloadRoutes(app: RouteApp): void {
+export function registerDownloadRoutes(
+  app: RouteApp,
+  { music, preserveSourceFormats }: DownloadRouteDependencies
+): void {
   const queues = new Map<number, DownloadQueue>();
   const clientQueues = new Map<string, DownloadQueue>();
   let nextQueueId = 1;
@@ -86,7 +103,10 @@ export function registerDownloadRoutes(app: RouteApp): void {
   app.post('/downloadQueue/:queueId/add', async (request, reply) => {
     const queue = getQueue(request.params.queueId);
     if (!queue) return reply.code(404).send('Download queue not found\n');
-    const added = queryKeys(request.query).map((key) => {
+    const parsedKeys = queryKeys(request.query);
+    if (parsedKeys.error) return reply.code(400).send(parsedKeys.error);
+    if (!parsedKeys.keys) return reply.code(400).send('The keys query parameter is required\n');
+    const added = parsedKeys.keys.map((key) => {
       const existing = [...queue.items.values()].find((item) => item.key === key);
       if (existing) return existing;
       const item: DownloadQueueItem = { id: nextItemId++, queueId: queue.id, key, status: 'available' };
@@ -112,6 +132,47 @@ export function registerDownloadRoutes(app: RouteApp): void {
     const queue = getQueue(request.params.queueId);
     const item = queue?.items.get(Number(request.params.itemId));
     return item ? json(reply, itemsBody([item])) : reply.code(404).send('Download queue item not found\n');
+  });
+
+  app.get('/downloadQueue/:queueId/item/:itemId/decision', async (request, reply) => {
+    const queue = getQueue(request.params.queueId);
+    const item = queue?.items.get(Number(request.params.itemId));
+    return item
+      ? json(reply, JSON.stringify({ MediaContainer: { size: 1, ...decision, DecisionResult: decision } }))
+      : reply.code(404).send('Download queue item not found\n');
+  });
+
+  app.get('/downloadQueue/:queueId/item/:itemId/media', async (request, reply) => {
+    const queue = getQueue(request.params.queueId);
+    const item = queue?.items.get(Number(request.params.itemId));
+    const parsed = item ? parseMetadataKey(item.key.replace('/library/metadata/', '')) : undefined;
+    if (!item || parsed?.kind !== 's') return reply.code(404).send('Download queue item not found\n');
+    try {
+      const song = await music.song(parsed.id);
+      const clientProfile = String(request.headers['x-plex-client-profile-extra'] ?? '');
+      const source = await music.streamUrl(
+        parsed.id,
+        audioStreamOptions(song, preserveSourceFormats, true, clientProfile)
+      );
+      const range = request.headers.range;
+      const response = await fetch(source, range ? { headers: { range } } : undefined);
+      if (!response.ok || !response.body) return reply.code(502).send('Download media unavailable\n');
+      if (response.status === 206) reply.code(206);
+      reply.header('content-type', response.headers.get('content-type') ?? 'audio/mpeg');
+      for (const header of ['content-range', 'accept-ranges', 'content-length']) {
+        const value = response.headers.get(header);
+        if (value) reply.header(header, value);
+      }
+      return reply.send(Readable.fromWeb(response.body as unknown as ReadableStream));
+    } catch {
+      return reply.code(502).send('Download media unavailable\n');
+    }
+  });
+
+  app.post('/downloadQueue/:queueId/items/:itemId/restart', async (request, reply) => {
+    const queue = getQueue(request.params.queueId);
+    const item = queue?.items.get(Number(request.params.itemId));
+    return item ? reply.code(200).send() : reply.code(404).send('Download queue item not found\n');
   });
 
   app.delete('/downloadQueue/:queueId/items/:itemId', async (request, reply) => {
